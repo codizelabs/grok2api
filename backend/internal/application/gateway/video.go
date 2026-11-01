@@ -372,11 +372,35 @@ func (s *Service) RecoverVideoJobs(ctx context.Context) error {
 		return errors.Join(usageErr, err)
 	}
 	for _, job := range values {
+		// A job that is in_progress (its lease expired) or that an earlier
+		// process left behind may already have reached the provider. Re-sending
+		// it would be a second paid send, so it ends "interrupted" instead.
+		// Only a queued job this process created (after bootedAt) and never ran
+		// is enqueued, e.g. one that missed the full in-memory queue.
+		if job.Status == media.StatusInProgress || job.CreatedAt.Before(s.bootedAt) {
+			s.interruptRecoveredVideoJob(ctx, job.ID)
+			continue
+		}
 		if !s.enqueueVideoJob(job.ID) {
 			break
 		}
 	}
 	return usageErr
+}
+
+var errVideoJobInterrupted = errors.New("video job interrupted by a restart; not re-sent, outcome unknown")
+
+func (s *Service) interruptRecoveredVideoJob(ctx context.Context, id string) {
+	job, claimed, err := s.claimVideoJob(ctx, id)
+	if err != nil {
+		s.logger.Warn("video_job_interrupt_claim_failed", "job_id", id, "error", err)
+		return
+	}
+	if !claimed {
+		return
+	}
+	s.logger.Warn("video_job_interrupted", "job_id", id)
+	s.failVideoJob(ctx, job, "interrupted", errVideoJobInterrupted, 0, nil)
 }
 
 // RunVideoWorkers 使用固定 Worker 处理持久化任务，避免突发请求按任务创建无界 goroutine。

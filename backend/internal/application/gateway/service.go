@@ -218,6 +218,7 @@ type Service struct {
 	mediaWorker                 int
 	mediaInputSlots             chan struct{}
 	mediaQueueFull              atomic.Uint64
+	bootedAt                    time.Time
 	logger                      *slog.Logger
 	rateLimitMu                 sync.Mutex
 	rateLimitActive             atomic.Bool
@@ -266,7 +267,7 @@ func NewService(models routeResolver, audits auditRecorder, accounts *accountapp
 		models: models, audits: audits, accounts: accounts, clientKeys: clientKeys, providers: providers,
 		selector: selector, responses: responses, logger: slog.Default(),
 		rateLimits: make(map[string]teamModelRateLimit), rateLimitTeams: make(map[uint64]teamRateLimitObservation),
-		modelSyncing: make(map[uint64]struct{}),
+		modelSyncing: make(map[uint64]struct{}), bootedAt: time.Now().UTC(),
 	}
 	service.UpdateMaxAttempts(maxAttempts)
 	return service

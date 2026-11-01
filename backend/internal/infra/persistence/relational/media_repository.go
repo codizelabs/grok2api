@@ -449,9 +449,10 @@ func (r *MediaJobRepository) MarkMediaJobUsageRecorded(ctx context.Context, id s
 func (r *MediaJobRepository) ListRecoverableMediaJobs(ctx context.Context, limit int) ([]media.Job, error) {
 	var rows []mediaJobModel
 	now := time.Now().UTC()
-	// Recovery only enqueues IDs. The bounded worker reads one complete payload
-	// after it atomically claims the job.
-	if err := r.db.db.WithContext(ctx).Select("id").Where("status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?))", media.StatusQueued, media.StatusInProgress, now).Order("created_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	// Recovery reads only the ID, status and creation time (to tell interrupted
+	// jobs from fresh ones). The bounded worker reads one complete payload after
+	// it atomically claims the job.
+	if err := r.db.db.WithContext(ctx).Select("id", "status", "created_at").Where("status = ? OR (status = ? AND (lease_until IS NULL OR lease_until <= ?))", media.StatusQueued, media.StatusInProgress, now).Order("created_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	values := make([]media.Job, 0, len(rows))
