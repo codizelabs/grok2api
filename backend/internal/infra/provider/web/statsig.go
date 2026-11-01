@@ -449,7 +449,7 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 		return nil
 	}
 	a.log().Warn("web_statsig_fetch_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
-	return nil
+	return fmt.Errorf("%w: signer failed: %v", provider.ErrStatsigUnavailable, err)
 }
 
 // statsigConfigUsable reports ErrStatsigUnavailable when the configured

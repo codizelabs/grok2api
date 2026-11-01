@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -272,6 +273,15 @@ func TestSyncQuotaBlockedForbiddenSkipsStatsigRetryInURLMode(t *testing.T) {
 	adapter := NewAdapter(Config{
 		BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: "https://signer.example/sign",
 	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	// P1: a failing signer now stops the request, so give this test a working
+	// in-process signer; the request must be signed before it can be classified.
+	adapter.statsig.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return "meta-value", nil
+	}
+	adapter.statsig.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, _ := json.Marshal(map[string]string{"x-statsig-id": testValidStatsigID})
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}, Request: request}, nil
+	})}
 	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 6, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
 	if !errors.Is(err, provider.ErrUnauthorized) {
 		t.Fatalf("err = %v, want ErrUnauthorized", err)
