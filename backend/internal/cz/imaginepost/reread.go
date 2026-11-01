@@ -56,15 +56,18 @@ func (s *Service) verifyByReRead(ctx context.Context, credential account.Credent
 		return streamResult{}, reReadUnknown
 	}
 	human := humans[0]
-	if human.ParentResponseID != "" && human.ParentResponseID != parent {
+	// Fail closed: a missing parent or time could be another send made on
+	// the same post at the same time.
+	if human.ParentResponseID != parent {
 		return streamResult{}, reReadUnknown
 	}
-	if at, parseErr := time.Parse(time.RFC3339Nano, human.CreateTime); parseErr == nil && at.Before(sentAt.Add(-reReadClockSkew)) {
+	at, parseErr := time.Parse(time.RFC3339Nano, human.CreateTime)
+	if parseErr != nil || at.Before(sentAt.Add(-reReadClockSkew)) {
 		return streamResult{}, reReadUnknown
 	}
 	var answer []PostItem
 	for _, item := range models {
-		if item.ParentResponseID == human.ResponseID || (item.ParentResponseID == "" && len(models) == 1) {
+		if item.ParentResponseID == human.ResponseID {
 			answer = append(answer, item)
 		}
 	}

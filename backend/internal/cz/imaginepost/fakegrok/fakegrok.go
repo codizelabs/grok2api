@@ -123,6 +123,34 @@ type Server struct {
 	omitInflight  map[string]bool
 	userIDs       map[string]string
 	streamError   string
+	twist         Twist
+}
+
+// Twist alters what the next in-post send leaves in the post, so the free
+// re-read after an unrecognised reply can be tested against posts it must
+// not count as a verified result.
+type Twist string
+
+const (
+	// TwistNone leaves the post as the send made it.
+	TwistNone Twist = ""
+	// TwistTwoHumans adds a second new human item (another send at the same time).
+	TwistTwoHumans Twist = "two_humans"
+	// TwistOtherParent puts the new human item on a parent P3 did not send.
+	TwistOtherParent Twist = "other_parent"
+	// TwistNoParent leaves the new human item with no parent.
+	TwistNoParent Twist = "no_parent"
+	// TwistInflight leaves a response in flight after the send.
+	TwistInflight Twist = "inflight"
+	// TwistOldItem dates the new human item an hour before the send.
+	TwistOldItem Twist = "old_item"
+)
+
+// SetTwist applies twist to the next in-post send once.
+func (s *Server) SetTwist(twist Twist) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.twist = twist
 }
 
 var (
@@ -521,8 +549,24 @@ func (s *Server) serveAddResponse(writer http.ResponseWriter, call Call, convers
 	now := time.Now().UTC()
 	message, _ := body["message"].(string)
 	target := s.conversations[resultConversation]
-	target.Responses = append(target.Responses,
-		response{ResponseID: human, ParentResponseID: parent, Sender: "human", Message: message, AssetIDs: inputAssetsOf(body), CreateTime: now})
+	humanItem := response{ResponseID: human, ParentResponseID: parent, Sender: "human", Message: message, AssetIDs: inputAssetsOf(body), CreateTime: now}
+	twist := s.twist
+	s.twist = TwistNone
+	switch twist {
+	case TwistOtherParent:
+		humanItem.ParentResponseID = s.newID("resp")
+	case TwistNoParent:
+		humanItem.ParentResponseID = ""
+	case TwistOldItem:
+		humanItem.CreateTime = now.Add(-time.Hour)
+	case TwistInflight:
+		target.Inflight = []string{s.newID("resp")}
+	}
+	target.Responses = append(target.Responses, humanItem)
+	if twist == TwistTwoHumans {
+		target.Responses = append(target.Responses,
+			response{ResponseID: s.newID("resp"), ParentResponseID: parent, Sender: "human", Message: "another send", CreateTime: now})
+	}
 	if withModel {
 		target.Responses = append(target.Responses,
 			response{ResponseID: model, ParentResponseID: human, Sender: "assistant", Message: message, AssetIDs: resultAssets, Model: modelName, CreateTime: now.Add(time.Second)})
