@@ -74,7 +74,7 @@ func (a *Adapter) DoImagine(ctx context.Context, credential account.Credential, 
 	}
 	// Check the signer before taking an egress lease so a missing value makes
 	// zero calls of any kind.
-	if err := statsigConfigUsable(cfg); err != nil {
+	if err := statsigUsableFor(cfg, method, path); err != nil {
 		return nil, err
 	}
 	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
@@ -135,6 +135,13 @@ func (a *Adapter) czApplySignedStatsig(ctx context.Context, request *http.Reques
 	request.Header.Del("x-statsig-id")
 	if err := statsigConfigUsable(cfg); err != nil {
 		return err
+	}
+	if cfg.StatsigMode == "browser" {
+		if err := applyBrowserStatsig(request); err != nil {
+			a.log().Warn("cz_imagine_statsig_required", "mode", cfg.StatsigMode, "method", request.Method, "endpoint", czImagineEndpoint(path))
+			return err
+		}
+		return nil
 	}
 	if cfg.StatsigMode == "manual" {
 		request.Header.Set("x-statsig-id", strings.TrimSpace(cfg.StatsigManualValue))

@@ -24,6 +24,9 @@ const (
 	StatsigReasonPageUnreachable = "grok.com page could not be loaded"
 	StatsigReasonPageStatus      = "grok.com page returned an error status"
 	StatsigReasonPageTooLarge    = "grok.com page is larger than the safety limit"
+	// StatsigReasonBrowserRequired: the endpoint is marked as needing a
+	// signature, and statsigMode "browser" sends none.
+	StatsigReasonBrowserRequired = "endpoint needs x-statsig-id and browser mode sends none; choose manual or url mode"
 )
 
 // StatsigUnavailableError is ErrStatsigUnavailable with the reason no

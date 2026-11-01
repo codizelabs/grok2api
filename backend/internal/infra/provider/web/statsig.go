@@ -454,11 +454,52 @@ func validStatsigID(value string) bool {
 	return err == nil && len(decoded) == 70
 }
 
-// applySignedStatsig sets x-statsig-id on request. It fails closed: when no
-// valid value can be had from the configured source it returns an error that
-// wraps ErrStatsigUnavailable with a readable reason, and the caller must not
-// send the request. "local" computes the value in-process from grok.com's own
-// page; "url" asks a configured signer (there is no built-in signer URL);
+// statsigRequiredEndpoints lists the grok.com calls that need x-statsig-id
+// even though grok.com's browser client sends none on the calls observed (1
+// Nov 2026). Keys are "METHOD " + czImagineEndpoint(path), for example
+// "POST /rest/app-chat/conversations/{id}/responses". In "browser" mode a
+// listed call fails closed with StatsigReasonBrowserRequired instead of going
+// out unsigned. Empty: no call has been seen to need one.
+var statsigRequiredEndpoints = map[string]bool{}
+
+func statsigRequired(method, path string) bool {
+	return statsigRequiredEndpoints[strings.ToUpper(method)+" "+czImagineEndpoint(path)]
+}
+
+// applyBrowserStatsig prepares request the way grok.com's browser sends it:
+// no x-statsig-id, and an x-xai-request-id (a fresh UUIDv4, as the page's
+// crypto.randomUUID() gives). It fails closed for a call listed in
+// statsigRequiredEndpoints.
+func applyBrowserStatsig(request *http.Request) error {
+	request.Header.Del("x-statsig-id")
+	if statsigRequired(request.Method, request.URL.EscapedPath()) {
+		return provider.NewStatsigUnavailable(provider.StatsigReasonBrowserRequired)
+	}
+	if request.Header.Get("x-xai-request-id") == "" {
+		request.Header.Set("x-xai-request-id", newRequestUUID())
+	}
+	return nil
+}
+
+// statsigUsableFor is statsigConfigUsable plus the per-endpoint rule of
+// "browser" mode, for callers that check before taking an egress lease.
+func statsigUsableFor(cfg Config, method, path string) error {
+	if err := statsigConfigUsable(cfg); err != nil {
+		return err
+	}
+	if cfg.StatsigMode == "browser" && statsigRequired(method, path) {
+		return provider.NewStatsigUnavailable(provider.StatsigReasonBrowserRequired)
+	}
+	return nil
+}
+
+// applySignedStatsig sets the Statsig headers on request. "browser" (the
+// default) sends what grok.com's browser sends: no x-statsig-id. The other
+// modes fail closed: when no valid value can be had from the configured
+// source it returns an error that wraps ErrStatsigUnavailable with a readable
+// reason, and the caller must not send the request. "local" computes the
+// value in-process from grok.com's page (stale: grok.com no longer serves its
+// inputs); "url" asks a configured signer (there is no built-in signer URL);
 // "manual" sends a pasted value.
 func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request, token string, lease *infraegress.Lease) error {
 	if request == nil {
@@ -468,6 +509,13 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 	request.Header.Del("x-statsig-id")
 	if err := statsigConfigUsable(cfg); err != nil {
 		return err
+	}
+	if cfg.StatsigMode == "browser" {
+		if err := applyBrowserStatsig(request); err != nil {
+			a.log().Warn("web_statsig_required", "mode", cfg.StatsigMode, "method", request.Method, "path", czImagineEndpoint(request.URL.EscapedPath()))
+			return err
+		}
+		return nil
 	}
 	if cfg.StatsigMode == "manual" {
 		request.Header.Set("x-statsig-id", strings.TrimSpace(cfg.StatsigManualValue))
@@ -512,10 +560,10 @@ func (a *Adapter) signStatsig(ctx context.Context, cfg Config, token string, lea
 
 // statsigConfigUsable reports ErrStatsigUnavailable, with its reason, when the
 // configured Statsig source cannot produce a valid value, before any network
-// call. "local" needs no configuration.
+// call. "browser" and "local" need no configuration.
 func statsigConfigUsable(cfg Config) error {
 	switch cfg.StatsigMode {
-	case "local":
+	case "browser", "local":
 		return nil
 	case "manual":
 		value := strings.TrimSpace(cfg.StatsigManualValue)
@@ -540,12 +588,13 @@ func statsigConfigUsable(cfg Config) error {
 }
 
 // WarmStatsig 只使用一个 Web 账号和一个出口租约预热共享签名，不会逐账号访问上游。
+// "browser" mode has nothing to warm and makes no call.
 func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential) (int, error) {
 	cfg := a.config()
 	if err := statsigConfigUsable(cfg); err != nil {
 		return 0, err
 	}
-	if cfg.StatsigMode == "manual" {
+	if cfg.StatsigMode == "manual" || cfg.StatsigMode == "browser" {
 		return 0, nil
 	}
 	if a.statsig == nil {
