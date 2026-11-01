@@ -242,6 +242,13 @@ func (s *Service) executeImage(
 				lease.Release()
 				continue
 			}
+			if errors.Is(err, provider.ErrStatsigUnavailable) {
+				// Nothing was sent: not the account's fault, so no penalty.
+				lease.Release()
+				failure := newTransportUpstreamFailure(err, credential.ID, credential.Name)
+				writeFailureAudit(failure.HTTPStatus, failure.AuditCode(), &credential)
+				return nil, failure
+			}
 			if !provider.IsMediaPostProcessingError(err) {
 				s.selector.MarkFailure(ctx, credential, 0, 0)
 			}

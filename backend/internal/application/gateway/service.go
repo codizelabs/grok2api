@@ -1823,6 +1823,12 @@ func auditRequestSucceeded(statusCode int, errorCode string) bool {
 }
 
 func isRetryableTransportFailure(providerValue accountdomain.Provider, err error) bool {
+	// No valid x-statsig-id means nothing was sent: the cause is the Statsig
+	// source, not the account, so retrying on any account cannot help and
+	// must not mark the account failed.
+	if errors.Is(err, provider.ErrStatsigUnavailable) {
+		return false
+	}
 	return providerValue != accountdomain.ProviderBuild || !neterrorpkg.IsResponseHeaderTimeout(err)
 }
 
