@@ -378,31 +378,39 @@ func (s *Service) RecoverVideoJobs(ctx context.Context) error {
 		// Only a queued job this process created (after bootedAt) and never ran
 		// is enqueued, e.g. one that missed the full in-memory queue, and a job
 		// this process deferred before any create was sent.
-		deferredUnsent := s.isDeferredUnsentVideoJob(job.ID)
+		// Taken out of the set before the enqueue, so a worker that defers the
+		// job again (still unsent) re-adds an entry nothing here deletes.
+		deferredUnsent := s.takeDeferredUnsentVideoJob(job.ID)
 		if !deferredUnsent && (job.Status == media.StatusInProgress || job.CreatedAt.Before(s.bootedAt)) {
 			s.interruptRecoveredVideoJob(ctx, job.ID)
 			continue
 		}
 		if !s.enqueueVideoJob(job.ID) {
+			if deferredUnsent {
+				s.markDeferredUnsentVideoJob(job.ID)
+			}
 			break
-		}
-		if deferredUnsent {
-			s.forgetDeferredUnsentVideoJob(job.ID)
 		}
 	}
 	return usageErr
 }
 
-func (s *Service) isDeferredUnsentVideoJob(id string) bool {
+// takeDeferredUnsentVideoJob reports whether this process deferred the job
+// before any send, and removes it from the set.
+func (s *Service) takeDeferredUnsentVideoJob(id string) bool {
 	s.mediaMu.Lock()
 	defer s.mediaMu.Unlock()
 	_, ok := s.mediaDeferredUnsent[id]
+	delete(s.mediaDeferredUnsent, id)
 	return ok
 }
 
-func (s *Service) forgetDeferredUnsentVideoJob(id string) {
+func (s *Service) markDeferredUnsentVideoJob(id string) {
 	s.mediaMu.Lock()
-	delete(s.mediaDeferredUnsent, id)
+	if s.mediaDeferredUnsent == nil {
+		s.mediaDeferredUnsent = make(map[string]struct{})
+	}
+	s.mediaDeferredUnsent[id] = struct{}{}
 	s.mediaMu.Unlock()
 }
 
@@ -1456,12 +1464,7 @@ var errVideoJobInterruptedAfterSend = errors.New("video job interrupted by a shu
 // instead of failing it "interrupted"; after a restart nothing is remembered
 // and the job ends "interrupted" like every job from an earlier process.
 func (s *Service) deferVideoJob(ctx context.Context, job media.Job) {
-	s.mediaMu.Lock()
-	if s.mediaDeferredUnsent == nil {
-		s.mediaDeferredUnsent = make(map[string]struct{})
-	}
-	s.mediaDeferredUnsent[job.ID] = struct{}{}
-	s.mediaMu.Unlock()
+	s.markDeferredUnsentVideoJob(job.ID)
 	now := time.Now().UTC()
 	leaseUntil := now.Add(5 * time.Minute)
 	job.Status = media.StatusInProgress
