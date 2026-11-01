@@ -87,9 +87,14 @@ type Config struct {
 	// (no values, prompts, URLs or ids) to this file (replyshape.go). Off by
 	// default.
 	DebugReplyShapeFile string
+	// MaxImportReads bounds the free reads one import makes (default 4).
+	MaxImportReads int
 }
 
 func (c Config) withDefaults() Config {
+	if c.MaxImportReads <= 0 {
+		c.MaxImportReads = defaultMaxImportReads
+	}
 	if c.MaxImageBytes <= 0 {
 		c.MaxImageBytes = 20 << 20
 	}

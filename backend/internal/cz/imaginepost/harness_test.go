@@ -180,6 +180,10 @@ type recordingTransport struct {
 	signs []string
 	// failNextAssetRead, when set, fails the next GET /rest/assets/ once.
 	failNextAssetRead error
+	// failListReadsFor, when set, fails every GET .../responses made on
+	// that account id with failListReadsErr.
+	failListReadsFor uint64
+	failListReadsErr error
 }
 
 func (r *recordingTransport) SignImagine(ctx context.Context, credential account.Credential, method, path string) error {
@@ -226,6 +230,13 @@ func (r *recordingTransport) Calls() []string {
 
 func (r *recordingTransport) DoImagine(ctx context.Context, credential account.Credential, method, path string, body []byte) (*http.Response, error) {
 	r.note(method + " " + path)
+	r.mu.Lock()
+	listFailure := r.failListReadsErr
+	listFailFor := r.failListReadsFor
+	r.mu.Unlock()
+	if listFailure != nil && credential.ID == listFailFor && method == http.MethodGet && strings.Contains(path, "/responses?") {
+		return nil, listFailure
+	}
 	if method == http.MethodGet && strings.HasPrefix(path, "/rest/assets/") {
 		r.mu.Lock()
 		failure := r.failNextAssetRead
