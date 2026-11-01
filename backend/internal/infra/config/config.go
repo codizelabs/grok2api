@@ -21,10 +21,18 @@ import (
 )
 
 const (
-	DatabaseURLEnv                = "GROK2API_DATABASE_URL"
-	StatsigModeManual             = "manual"
-	StatsigModeURL                = "url"
-	StatsigModeLocal              = "local"
+	DatabaseURLEnv    = "GROK2API_DATABASE_URL"
+	StatsigModeManual = "manual"
+	StatsigModeURL    = "url"
+	StatsigModeLocal  = "local"
+	// StatsigModeBrowser sends what grok.com's own browser client sends: no
+	// x-statsig-id (grok.com sends none as served on 1 Nov 2026) and a fresh
+	// x-xai-request-id per request. It is the default.
+	StatsigModeBrowser = "browser"
+	// StatsigModeLocalStored is how an explicit "local" choice is persisted,
+	// so a "local" saved by an older build (where it was the default) can be
+	// told apart and moved to "browser" on load.
+	StatsigModeLocalStored        = "local-computed"
 	ClearanceModeManual           = "manual"
 	ClearanceModeFlareSolverr     = "flaresolverr"
 	ClearanceModeOnDemand         = "on_demand"
@@ -613,8 +621,11 @@ func (c Config) Validate() error {
 		return errors.New("provider.web.baseURL 必须是无凭据的 HTTPS URL")
 	}
 	switch c.Provider.Web.StatsigMode {
+	case StatsigModeBrowser:
+		// Sends no x-statsig-id, like grok.com's browser: nothing to configure.
 	case StatsigModeLocal:
 		// Computed in-process from grok.com's own page: nothing to configure.
+		// Stale: grok.com no longer serves the page inputs it needs.
 	case StatsigModeManual:
 		if !validStatsigID(c.Provider.Web.StatsigManualValue) {
 			return errors.New("provider.web 手动 x-statsig-id 格式无效")
@@ -629,7 +640,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("provider.web Statsig 签名 URL 无效: %w", err)
 		}
 	default:
-		return errors.New("provider.web Statsig 模式必须是 local、manual 或 url")
+		return errors.New("provider.web Statsig 模式必须是 browser、local、manual 或 url")
 	}
 	switch c.Provider.Web.ClearanceMode {
 	case ClearanceModeManual:
@@ -916,7 +927,7 @@ func defaultConfig() Config {
 				StreamIdleTimeout: Duration(settingsdomain.DefaultBuildStreamIdleTimeout),
 			},
 			Web: WebProviderConfig{
-				BaseURL: "https://grok.com", StatsigMode: StatsigModeLocal,
+				BaseURL: "https://grok.com", StatsigMode: StatsigModeBrowser,
 				ClearanceMode: ClearanceModeManual, FlareSolverrURL: DefaultFlareSolverrURL,
 				ClearanceTimeout: Duration(time.Minute), ClearanceRefresh: Duration(10 * time.Minute),
 				QuotaTimeout: Duration(25 * time.Second),
@@ -994,15 +1005,37 @@ func validateFlareSolverrURL(value string) error {
 	return nil
 }
 
-// ResolveStatsigMode returns the Statsig mode to run. "url" with no signer
-// URL can sign nothing (there is no built-in signer), so it resolves to
-// "local", which computes x-statsig-id in-process; this moves existing
-// installs saved as url-with-a-blank-URL onto local. Any other value is
-// returned trimmed, for Validate to judge (an empty mode stays invalid).
+// ResolveStatsigMode returns the Statsig mode to run for a mode being saved.
+// "url" with no signer URL can sign nothing (there is no built-in signer), so
+// it resolves to "browser", which sends no x-statsig-id like grok.com's own
+// client. Any other value is returned trimmed, for Validate to judge (an
+// empty mode stays invalid).
 func ResolveStatsigMode(mode, signerURL string) string {
 	mode = strings.TrimSpace(mode)
 	if mode == StatsigModeURL && strings.TrimSpace(signerURL) == "" {
+		return StatsigModeBrowser
+	}
+	return mode
+}
+
+// ResolveStoredStatsigMode returns the Statsig mode to run for a persisted
+// value. A plain "local" was written by builds where local was the default,
+// so it moves to "browser"; an explicit local choice is stored as
+// StatsigModeLocalStored and loads as "local".
+func ResolveStoredStatsigMode(stored, signerURL string) string {
+	switch strings.TrimSpace(stored) {
+	case StatsigModeLocal:
+		return StatsigModeBrowser
+	case StatsigModeLocalStored:
 		return StatsigModeLocal
+	}
+	return ResolveStatsigMode(stored, signerURL)
+}
+
+// StoredStatsigMode returns how mode is persisted (see ResolveStoredStatsigMode).
+func StoredStatsigMode(mode string) string {
+	if mode == StatsigModeLocal {
+		return StatsigModeLocalStored
 	}
 	return mode
 }
