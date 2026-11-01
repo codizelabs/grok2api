@@ -33,8 +33,8 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 | `post_not_found` | 404 | not_sent | the post isn't pinned for this key, or grok.com answers 404 |
 | `item_not_in_post` | 422 | not_sent | the item or the parent isn't in the post |
 | `post_in_flight` | 409 | not_sent | the free re-read shows an in-flight response, or omits `inflightResponses` (fail closed) |
-| `account_unavailable` | 503 | not_sent | no account in the key's scope passes the create checks (below); nothing is uploaded or sent |
-| `account_busy` | 429 | not_sent | the account already has a send in flight (one per account, ADR-0002 § 6 Q1) |
+| `account_unavailable` | 503 (429 when the pool refused with a 429) | not_sent | the capacity error: no account in the key's scope passes the create checks (decision 2); nothing is uploaded or sent |
+| `account_busy` | 429 | not_sent | the pinned account already has a send in flight (one per account, ADR-0002 § 6 Q1); for a create, every eligible account has one |
 | `job_id_required` / `job_id_reused` | 400 / 409 | not_sent | each `job_id` is used once, ever, per client key, and the record survives restarts |
 | `spec_unsupported` | 422 | not_sent | a video spec other than 15 s at 720p |
 | `spec_unconfirmable` | 422 | not_sent | the pinned account's free quota read doesn't confirm 15 s and 720p |
@@ -59,8 +59,8 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
   - like and unlike, only when `allowLike` is set.
 
   Everything else is refused, and so is any send body that contains `makePublic`. The transport in package `web` refuses anything outside `/rest/` a second time.
-- **Pin with no fallback** (sec-rowan B3). The `cz_imagine_post_owner` row (`conversation_id` PK, `account_id`, `client_key_id`, `owner_user_hash`, `created_at`) is written once and never updated. Every call leases only that account, through `gateway.Service.CZAcquireImaginePinned` (which calls `AcquirePinnedForKey`). If the pool hands back any other account, P3 refuses.
-- **Statsig on every `/rest/` call**, reads included, failing closed. There is no replay, not even the upstream code-7 retry (sec-rowan N1).
+- **Pin with no fallback** (sec-rowan B3). The `cz_imagine_post_owner` row (`conversation_id` PK, `account_id`, `client_key_id`, `owner_user_hash`, `created_at`) is written once; its account and key never change. The one update: when the read right after create failed, `owner_user_hash` is empty, and the first successful read of an item in the post (a read, or the source item before the next send) fills it, once, so the `account_mismatch` tripwire works from then on. Every call leases only that account, through `gateway.Service.CZAcquireImaginePinned` (which calls `AcquirePinnedForKey`). If the pool hands back any other account, P3 refuses.
+- **Statsig on every `/rest/` call**, reads included, failing closed. A send is signed (`SignImagine`) before any reference upload of that send: in `url` mode the signer is asked for exactly that request (its cache then serves the send), so a failing signer means zero uploads and zero sends. There is no replay, not even the upstream code-7 retry (sec-rowan N1).
 - **One send per job_id**, in the `cz_imagine_send_key` table. A create reserves it before choosing an account; an in-post send reserves it after the free re-read, just before the upload and send. A reserved id is never released, whatever the outcome.
 - **Every in-post send re-reads the post first** (free), so the parent `head` is the newest response.
 - **Post-context check after every send**: every conversation id the stream names, and the new asset's `currentConversationId`, must be the post's.
@@ -76,7 +76,9 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 Each one is a default, not a new design.
 
 1. **Text-only create is refused** (`capability_unsupported`). Grok makes text-only images over the imagine WebSocket, which isn't on the allow-list, and its in-post behaviour is unknown. A character's post starts from an uploaded anchor.
-2. **The account for a new post** is the first one grok2api's ordinary selector offers inside the key's scope whose free `quota_info` read confirms 15 s at 720p; up to 4 accounts are tried, each excluded after a failed check. Not built yet (open questions): ADR-0002 § 1's deterministic ranking (fewest open pinned posts, then remaining quota, then account id), and a "pinned-only" mark that keeps an account (the owner's main one, if O7 becomes yes) from ever getting new posts. Under O7's default that account isn't in the pool.
+2. **The account for a new post** follows ADR-0002 § 1's deterministic ranking. `gateway.Service.CZImagineNewCandidates` lists, without leasing or calling grok.com, every web account in the key's scope that is enabled, signed in, serves both image edit and 720p video, and isn't cooling or out of quota, with the remaining quota grok2api holds. P3 drops the pinned-only accounts and ranks the rest: fewest open pinned posts, then most remaining image-edit quota, then most remaining 720p video quota (unknown after any known count), then the lowest account id. It then walks that order: an account with a send in flight, or one the pool refuses when leased, is skipped for the next; a leased account must pass a free `quota_info` read confirming 15 s at 720p. At most 4 quota reads per create. If none passes, the create is `account_unavailable` (`account_busy` if every eligible account was busy), and nothing is uploaded or sent.
+
+   **Pinned-only accounts**: `cz.imaginePost.pinnedOnlyAccountIds` (grok2api account ids, default empty) serve only the posts already pinned to them and are never chosen for a new post (the owner's main account, if O7 becomes yes; under O7's default that account isn't in the pool).
 3. **`maxVideoDurationSeconds` absent means `spec_unconfirmable`** (fail closed), and with decision 2 it also means no account can create a post. Where `quota_info` carries the field is provisional: if the spike shows the answer never carries it, change `parseQuota` and the fake together.
 4. **The parent `head`** is the newest response by `createTime`, because the list doesn't name the container's `lastResponseId` (provisional).
 5. **`skipCancelCurrentInflightRequests: true`** in in-post sends, so a send never cancels another response (provisional, U1).

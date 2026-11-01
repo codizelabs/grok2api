@@ -59,3 +59,29 @@ func TestCZImagineNewLeaseStaysInScope(t *testing.T) {
 		t.Fatalf("new lease on unknown account %d", lease.Credential.ID)
 	}
 }
+
+// ADR-0002 § 1 (pool half): a new post's candidates are every usable account
+// in scope, sorted by id, and a cooling account is left out. Nothing is leased.
+func TestCZImagineNewCandidatesSkipCooling(t *testing.T) {
+	h := newCZPinHarness(t)
+	scope := h.key.AccountScope()
+	route := CZImagineRoute{UpstreamModel: "grok-imagine-video"}
+	values, err := h.service.CZImagineNewCandidates(h.ctx, scope, route)
+	if err != nil || len(values) != 2 || values[0].AccountID >= values[1].AccountID || len(values[0].Remaining) != 1 {
+		t.Fatalf("candidates = %+v err = %v, want both accounts sorted by id, one remaining per route", values, err)
+	}
+	h.selector.MarkFailure(h.ctx, h.pinned, 429, time.Hour)
+	values, err = h.service.CZImagineNewCandidates(h.ctx, scope, route)
+	if err != nil || len(values) != 1 || values[0].AccountID != h.healthy.ID {
+		t.Fatalf("with the pinned account cooling: candidates = %+v err = %v, want only the healthy one", values, err)
+	}
+	// Listing leased nothing: the healthy account's single slot is free.
+	lease, err := h.service.CZAcquireImaginePinned(h.ctx, h.healthy.ID, "grok-imagine-video", "", scope)
+	if err != nil {
+		t.Fatalf("healthy account after listing: %v", err)
+	}
+	lease.Release()
+	if _, err := h.service.CZImagineNewCandidates(h.ctx, scope); err == nil {
+		t.Fatal("no routes: want an error")
+	}
+}
