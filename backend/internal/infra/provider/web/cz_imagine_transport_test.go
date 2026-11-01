@@ -1,10 +1,12 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -165,5 +167,32 @@ func TestCZImagineTransportUploadAndMedia(t *testing.T) {
 	_ = body.Close()
 	if contentType != "image/jpeg" || string(data) != "FAKE-MEDIA-"+asset {
 		t.Fatalf("media = %q %q", contentType, data)
+	}
+}
+
+// B5 in url mode: a failing signer makes zero calls, and the log names the
+// endpoint with its ids removed, never the conversation or asset id.
+func TestCZImagineTransportURLModeLogsNoIDs(t *testing.T) {
+	adapter, fake, credential := newCZTransport(t, Config{StatsigMode: "url", StatsigSignerURL: "http://signer.internal/sign"})
+	signer := &p1Recorder{}
+	adapter.statsig.client = &http.Client{Transport: signer}
+	adapter.statsig.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		return `<meta name="grok-site-verification" content="cz-fixed-meta">`, nil
+	}
+	var logs bytes.Buffer
+	adapter.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	for _, path := range []string{
+		"/rest/app-chat/conversations/conv-CANARY-71c3/responses?conversationKind=CONVERSATION_KIND_IMAGINE",
+		"/rest/assets/asset-CANARY-71c3",
+	} {
+		if _, err := adapter.DoImagine(context.Background(), credential, http.MethodGet, path, nil); !errors.Is(err, provider.ErrStatsigUnavailable) {
+			t.Fatalf("%s: err = %v, want ErrStatsigUnavailable", path, err)
+		}
+	}
+	if len(fake.Calls()) != 0 {
+		t.Fatalf("%d calls reached the fake, want 0", len(fake.Calls()))
+	}
+	if strings.Contains(logs.String(), "CANARY") || !strings.Contains(logs.String(), "/rest/assets/{id}") {
+		t.Fatalf("logs = %q, want ids redacted and the endpoint named", logs.String())
 	}
 }

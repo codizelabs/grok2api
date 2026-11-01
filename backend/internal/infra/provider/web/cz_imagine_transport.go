@@ -21,6 +21,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
@@ -97,7 +98,7 @@ func (a *Adapter) DoImagine(ctx context.Context, credential account.Credential, 
 		request.Header.Del("Content-Type")
 	}
 	applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/imagine")
-	if err := a.applySignedStatsig(ctx, request, token, lease); err != nil {
+	if err := a.czApplySignedStatsig(ctx, request, token, lease, path); err != nil {
 		lease.Release()
 		return nil, err
 	}
@@ -116,6 +117,42 @@ func (a *Adapter) DoImagine(ctx context.Context, credential account.Credential, 
 		return err
 	})}
 	return response, nil
+}
+
+var czImagineIDSegment = regexp.MustCompile(`/(conversations|assets)/[^/?]+`)
+
+// czImagineEndpoint is a path with its confidential ids replaced, for logs.
+func czImagineEndpoint(path string) string {
+	path, _, _ = strings.Cut(path, "?")
+	return czImagineIDSegment.ReplaceAllString(path, "/$1/{id}")
+}
+
+// czApplySignedStatsig is applySignedStatsig with the same fail-closed rules,
+// but its logs name the endpoint with ids removed and never the signer's
+// error text (sec-rowan B5: conversation and asset ids never reach a log).
+func (a *Adapter) czApplySignedStatsig(ctx context.Context, request *http.Request, token string, lease *infraegress.Lease, path string) error {
+	cfg := a.config()
+	request.Header.Del("x-statsig-id")
+	if err := statsigConfigUsable(cfg); err != nil {
+		return err
+	}
+	if cfg.StatsigMode == "manual" {
+		request.Header.Set("x-statsig-id", strings.TrimSpace(cfg.StatsigManualValue))
+		return nil
+	}
+	if a.statsig == nil {
+		return fmt.Errorf("%w: signer not initialised", provider.ErrStatsigUnavailable)
+	}
+	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String())
+	if err != nil {
+		a.log().Warn("cz_imagine_statsig_failed", "method", request.Method, "endpoint", czImagineEndpoint(path))
+		return fmt.Errorf("%w: signer failed", provider.ErrStatsigUnavailable)
+	}
+	request.Header.Set("x-statsig-id", value)
+	if source == "stale" {
+		a.log().Warn("cz_imagine_statsig_stale", "method", request.Method, "endpoint", czImagineEndpoint(path))
+	}
+	return nil
 }
 
 // closerFunc runs its close once; later calls return nil.
@@ -149,8 +186,10 @@ func (a *Adapter) czImagineRejection(response *http.Response, lease interface {
 			lease.InvalidateClearance()
 		}
 		// A code-7 Statsig rejection only refreshes the signature for the next
-		// call; P3 never replays (sec-rowan N1).
-		_ = a.invalidateSignedStatsig(method, target)
+		// call; P3 never replays (sec-rowan N1) and never logs the path.
+		if cfg := a.config(); cfg.StatsigMode == "url" && a.statsig != nil {
+			a.statsig.Invalidate(cfg.BaseURL, cfg.StatsigSignerURL, method, target)
+		}
 	}
 	a.logWebMediaUpstreamRejection("cz_imagine", response, upstreamErr)
 	return &ImagineHTTPError{Status: response.StatusCode, BodyBytes: upstreamErr.bodyBytes, BodyPrefixSHA256: upstreamErr.bodyPrefixSHA256}
