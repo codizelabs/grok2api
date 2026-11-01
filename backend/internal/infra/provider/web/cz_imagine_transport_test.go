@@ -93,6 +93,9 @@ func TestCZImagineTransportStatsigFailsClosed(t *testing.T) {
 				t.Errorf("manual %q, %s: err = %v, want ErrStatsigUnavailable", value, call.name, err)
 			}
 		}
+		if _, err := adapter.UploadImagine(context.Background(), credential, "a.png", "image/png", []byte("png")); !errors.Is(err, provider.ErrStatsigUnavailable) {
+			t.Errorf("manual %q, upload: err = %v, want ErrStatsigUnavailable", value, err)
+		}
 		if n := len(fake.Calls()); n != 0 {
 			t.Fatalf("manual %q: %d calls reached the fake, want 0", value, n)
 		}

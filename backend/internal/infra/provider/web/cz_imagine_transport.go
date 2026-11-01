@@ -160,6 +160,11 @@ func (a *Adapter) UploadImagine(ctx context.Context, credential account.Credenti
 		return "", ErrImagineCallRefused
 	}
 	cfg := a.config()
+	// The upload is part of a send that needs a signature; without one, the
+	// send will be refused, so nothing is uploaded either (fail closed).
+	if err := statsigConfigUsable(cfg); err != nil {
+		return "", err
+	}
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
 		return "", err
