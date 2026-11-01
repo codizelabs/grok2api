@@ -24,6 +24,9 @@ import (
 type p2CountingVideoAdapter struct {
 	mu    sync.Mutex
 	calls int
+	// generate, when set, runs after the call is counted and its error is
+	// returned instead of a result (for example to simulate a shutdown).
+	generate func(context.Context) error
 }
 
 func (a *p2CountingVideoAdapter) Provider() account.Provider { return account.ProviderWeb }
@@ -34,10 +37,16 @@ func (a *p2CountingVideoAdapter) Definition() provider.Definition {
 	return definition
 }
 
-func (a *p2CountingVideoAdapter) GenerateVideo(_ context.Context, _ provider.VideoRequest) (provider.VideoResult, error) {
+func (a *p2CountingVideoAdapter) GenerateVideo(ctx context.Context, _ provider.VideoRequest) (provider.VideoResult, error) {
 	a.mu.Lock()
 	a.calls++
+	generate := a.generate
 	a.mu.Unlock()
+	if generate != nil {
+		if err := generate(ctx); err != nil {
+			return provider.VideoResult{}, err
+		}
+	}
 	return provider.VideoResult{AssetID: "video_asset_00001", ContentType: "video/mp4"}, nil
 }
 

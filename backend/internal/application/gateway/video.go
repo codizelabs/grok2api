@@ -376,16 +376,34 @@ func (s *Service) RecoverVideoJobs(ctx context.Context) error {
 		// process left behind may already have reached the provider. Re-sending
 		// it would be a second paid send, so it ends "interrupted" instead.
 		// Only a queued job this process created (after bootedAt) and never ran
-		// is enqueued, e.g. one that missed the full in-memory queue.
-		if job.Status == media.StatusInProgress || job.CreatedAt.Before(s.bootedAt) {
+		// is enqueued, e.g. one that missed the full in-memory queue, and a job
+		// this process deferred before any create was sent.
+		deferredUnsent := s.isDeferredUnsentVideoJob(job.ID)
+		if !deferredUnsent && (job.Status == media.StatusInProgress || job.CreatedAt.Before(s.bootedAt)) {
 			s.interruptRecoveredVideoJob(ctx, job.ID)
 			continue
 		}
 		if !s.enqueueVideoJob(job.ID) {
 			break
 		}
+		if deferredUnsent {
+			s.forgetDeferredUnsentVideoJob(job.ID)
+		}
 	}
 	return usageErr
+}
+
+func (s *Service) isDeferredUnsentVideoJob(id string) bool {
+	s.mediaMu.Lock()
+	defer s.mediaMu.Unlock()
+	_, ok := s.mediaDeferredUnsent[id]
+	return ok
+}
+
+func (s *Service) forgetDeferredUnsentVideoJob(id string) {
+	s.mediaMu.Lock()
+	delete(s.mediaDeferredUnsent, id)
+	s.mediaMu.Unlock()
 }
 
 var errVideoJobInterrupted = errors.New("video job interrupted by a restart; not re-sent, outcome unknown")
@@ -584,6 +602,9 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	var lease *accountLease
 	var result provider.VideoResult
 	var lastErr error
+	// sendStarted turns true just before the first GenerateVideo call; from
+	// then on the provider may have received (and charged for) the create.
+	sendStarted := false
 
 	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
 		attemptStarted := time.Now()
@@ -616,7 +637,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 		if err != nil {
 			if parent.Err() != nil {
-				s.deferVideoJob(parent, job)
+				s.stopVideoJobOnShutdown(parent, job, sendStarted, failureAttempts.snapshot())
 				return
 			}
 			if lastErr == nil {
@@ -644,6 +665,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 
 		lastProgress := job.Progress
+		sendStarted = true
 		result, err = adapter.GenerateVideo(ctx, provider.VideoRequest{
 			Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Model: route.UpstreamModel,
 			Operation: operation,
@@ -672,7 +694,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		lastErr = err
 		captureVideoAttempt(failureAttempts, lease.Credential, attemptStarted, err)
 		if parent.Err() != nil {
-			s.deferVideoJob(parent, job)
+			s.stopVideoJobOnShutdown(parent, job, sendStarted, failureAttempts.snapshot())
 			return
 		}
 		if errors.Is(err, provider.ErrStatsigUnavailable) {
@@ -1415,7 +1437,31 @@ func (s *Service) logVideoGenerationFailure(job media.Job, credential account.Cr
 	logger.Warn("video_generation_failed", attributes...)
 }
 
+// stopVideoJobOnShutdown ends a run that its worker was told to stop. Once the
+// create may have reached the provider the job ends "interrupted" and is never
+// re-sent (P2, ADR 0001 § 7); before that it is deferred and runs later.
+func (s *Service) stopVideoJobOnShutdown(ctx context.Context, job media.Job, sendStarted bool, attempts []audit.Attempt) {
+	if sendStarted {
+		s.logger.Warn("video_job_interrupted", "job_id", job.ID, "reason", "shutdown_after_create_started")
+		s.failVideoJob(ctx, job, "interrupted", errVideoJobInterruptedAfterSend, 0, attempts)
+		return
+	}
+	s.deferVideoJob(ctx, job)
+}
+
+var errVideoJobInterruptedAfterSend = errors.New("video job interrupted by a shutdown after the create started; not re-sent, outcome unknown")
+
+// deferVideoJob puts back a job whose create was never sent, to run once its
+// lease runs out. Its ID is remembered in this process so recovery resumes it
+// instead of failing it "interrupted"; after a restart nothing is remembered
+// and the job ends "interrupted" like every job from an earlier process.
 func (s *Service) deferVideoJob(ctx context.Context, job media.Job) {
+	s.mediaMu.Lock()
+	if s.mediaDeferredUnsent == nil {
+		s.mediaDeferredUnsent = make(map[string]struct{})
+	}
+	s.mediaDeferredUnsent[job.ID] = struct{}{}
+	s.mediaMu.Unlock()
 	now := time.Now().UTC()
 	leaseUntil := now.Add(5 * time.Minute)
 	job.Status = media.StatusInProgress
