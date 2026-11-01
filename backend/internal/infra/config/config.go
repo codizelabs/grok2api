@@ -69,6 +69,7 @@ type Config struct {
 	QualityGuard      QualityGuardConfig      `yaml:"qualityGuard"`
 	ClientKeyDefaults ClientKeyDefaultsConfig `yaml:"clientKeyDefaults"`
 	Accounts          AccountsConfig          `yaml:"-"`
+	CZ                CZConfig                `yaml:"cz"` // CodizeLabs fork (P3)
 }
 
 type ServerConfig struct {

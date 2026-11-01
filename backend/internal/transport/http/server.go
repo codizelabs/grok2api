@@ -19,6 +19,7 @@ import (
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	settingsapp "github.com/chenyme/grok2api/backend/internal/application/settings"
 	updatecheckapp "github.com/chenyme/grok2api/backend/internal/application/updatecheck"
+	"github.com/chenyme/grok2api/backend/internal/cz/imaginepost"
 	accounthttp "github.com/chenyme/grok2api/backend/internal/transport/http/account"
 	adminauthhttp "github.com/chenyme/grok2api/backend/internal/transport/http/adminauth"
 	audithttp "github.com/chenyme/grok2api/backend/internal/transport/http/audit"
@@ -66,6 +67,7 @@ type Dependencies struct {
 	QualityGuardToken      string
 	QualityGuardProbe      egressapp.QualityProbeInput
 	Updates                *updatecheckapp.Service
+	CZImaginePost          *imaginepost.Service // CodizeLabs fork patch P3
 }
 
 type ReadinessComponent struct {
@@ -193,6 +195,7 @@ func New(deps Dependencies) *gin.Engine {
 		inferenceHandler.SetPublicAPIBaseURLResolver(deps.Settings.PublicAPIBaseURL)
 	}
 	inferenceHandler.Register(v1)
+	registerCZImaginePost(router, deps)
 	registerFrontend(router, deps.FrontendStaticPath)
 	return router
 }
