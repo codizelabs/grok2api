@@ -226,8 +226,9 @@ func newTransportUpstreamFailure(err error, accountID uint64, accountName string
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		code, message = "upstream_timeout", "上游服务响应超时"
 	} else if errors.Is(err, provider.ErrStatsigUnavailable) {
-		// Pre-send failure: nothing reached the upstream.
-		status, code, message = http.StatusServiceUnavailable, "statsig_unavailable", "x-statsig-id 不可用，请求未发送"
+		// Pre-send failure: nothing reached the upstream. The reason is one of
+		// provider's fixed StatsigReason strings, never upstream text.
+		status, code, message = http.StatusServiceUnavailable, "statsig_unavailable", "x-statsig-id unavailable ("+provider.StatsigUnavailableReason(err)+"); request not sent"
 	}
 	return &UpstreamFailure{
 		HTTPStatus: status, Code: code, PublicMessage: message,

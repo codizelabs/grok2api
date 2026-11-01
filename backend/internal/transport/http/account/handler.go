@@ -17,6 +17,7 @@ import (
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -1385,6 +1386,9 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error, fall
 		response.Error(c, http.StatusConflict, "accountConversionBusy", err.Error())
 	case errors.Is(err, accountapp.ErrWebAccountScriptBusy):
 		response.Error(c, http.StatusConflict, "webAccountScriptBusy", err.Error())
+	case errors.Is(err, provider.ErrStatsigUnavailable):
+		// Nothing was sent to grok.com; say why instead of a bare 502.
+		response.Error(c, http.StatusServiceUnavailable, "statsig_unavailable", "x-statsig-id unavailable ("+provider.StatsigUnavailableReason(err)+"); request not sent")
 	default:
 		response.Error(c, fallbackStatus, code, fallbackMessage)
 	}
