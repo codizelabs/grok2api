@@ -929,6 +929,12 @@ func buildImageEditPayload(prompt string, assets []string, aspectRatio string) m
 		"modelName": "imagine-image-edit", "message": prompt,
 		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
 		"mediaGenInput": map[string]any{"imageToImage": imageToImage},
+		// CodizeLabs: create it as an Imagine conversation, as grok.com's Imagine page does; without kind,
+		// grok.com files the edit as an ordinary chat and it shows in the account's chat history.
+		"kind": "CONVERSATION_KIND_IMAGINE",
+		"responseMetadata": map[string]any{"modelConfigOverride": map[string]any{
+			"modelMap": map[string]any{"imageEditModel": "imagine"},
+		}},
 	}
 }
 
