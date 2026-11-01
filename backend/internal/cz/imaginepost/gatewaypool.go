@@ -67,9 +67,9 @@ func (p GatewayPool) AcquirePinned(ctx context.Context, accountID uint64, purpos
 }
 
 // AcquireNew picks an account for a new post.
-func (p GatewayPool) AcquireNew(ctx context.Context, purpose Purpose, scope clientkeydomain.AccountScope) (Lease, error) {
+func (p GatewayPool) AcquireNew(ctx context.Context, purpose Purpose, scope clientkeydomain.AccountScope, excluded map[uint64]bool) (Lease, error) {
 	model, quotaMode := purposeRoute(purpose)
-	lease, err := p.Service.CZAcquireImagineNew(ctx, model, quotaMode, scope)
+	lease, err := p.Service.CZAcquireImagineNew(ctx, model, quotaMode, scope, excluded)
 	if err != nil {
 		return nil, refusal(err)
 	}

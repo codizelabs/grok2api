@@ -53,7 +53,7 @@ type Lease interface {
 // Pool leases accounts. AcquirePinned must return only accountID or an error.
 type Pool interface {
 	AcquirePinned(ctx context.Context, accountID uint64, purpose Purpose, scope clientkeydomain.AccountScope) (Lease, error)
-	AcquireNew(ctx context.Context, purpose Purpose, scope clientkeydomain.AccountScope) (Lease, error)
+	AcquireNew(ctx context.Context, purpose Purpose, scope clientkeydomain.AccountScope, excluded map[uint64]bool) (Lease, error)
 	Report(ctx context.Context, credential account.Credential, status int)
 }
 
@@ -243,9 +243,21 @@ func (s *Service) CreatePost(ctx context.Context, caller Caller, input CreateInp
 	if !s.validImage(*input.Image) {
 		return nil, invalid()
 	}
-	lease, err := s.pool.AcquireNew(ctx, PurposeImage, caller.Scope)
+	reserved, err := s.store.ReserveJob(ctx, caller.ClientKeyID, input.JobID, "create", "")
 	if err != nil {
-		return nil, s.logged("create", "", 0, mapAcquireErr(err, CodeNoAccount))
+		return nil, s.logged("create", "", 0, notSent(CodeInternal, http.StatusInternalServerError))
+	}
+	if !reserved {
+		return nil, s.logged("create", "", 0, notSent(CodeJobIDReused, http.StatusConflict))
+	}
+	state := string(NotSent)
+	postRef := ""
+	defer func() {
+		_ = s.store.FinishJob(context.WithoutCancel(ctx), caller.ClientKeyID, input.JobID, state, postRef)
+	}()
+	lease, chooseErr := s.chooseNewAccount(ctx, caller)
+	if chooseErr != nil {
+		return nil, s.logged("create", "", 0, chooseErr)
 	}
 	defer lease.Release()
 	credential := lease.Credential()
@@ -254,18 +266,6 @@ func (s *Service) CreatePost(ctx context.Context, caller Caller, input CreateInp
 		return nil, s.logged("create", "", credential.ID, busyErr)
 	}
 	defer release()
-	reserved, err := s.store.ReserveJob(ctx, caller.ClientKeyID, input.JobID, "create", "")
-	if err != nil {
-		return nil, s.logged("create", "", credential.ID, notSent(CodeInternal, http.StatusInternalServerError))
-	}
-	if !reserved {
-		return nil, s.logged("create", "", credential.ID, notSent(CodeJobIDReused, http.StatusConflict))
-	}
-	state := string(NotSent)
-	postRef := ""
-	defer func() {
-		_ = s.store.FinishJob(context.WithoutCancel(ctx), caller.ClientKeyID, input.JobID, state, postRef)
-	}()
 
 	fileID, uploadErr := s.upload(ctx, credential, *input.Image)
 	if uploadErr != nil {
@@ -310,6 +310,36 @@ func (s *Service) CreatePost(ctx context.Context, caller Caller, input CreateInp
 	}
 	s.logOK("create", conversationID, credential.ID)
 	return result, nil
+}
+
+// maxNewAccountTries bounds how many accounts a create's free quota reads try.
+const maxNewAccountTries = 4
+
+// chooseNewAccount picks the account a new post is pinned to: one the pool
+// offers inside the key's scope whose free quota read confirms 15 s at 720p
+// (ADR-0002 § 1), so every later video in the post can be made on it.
+func (s *Service) chooseNewAccount(ctx context.Context, caller Caller) (Lease, *Error) {
+	excluded := map[uint64]bool{}
+	for try := 0; try < maxNewAccountTries; try++ {
+		lease, err := s.pool.AcquireNew(ctx, PurposeImage, caller.Scope, excluded)
+		if err != nil {
+			if try > 0 {
+				break
+			}
+			return nil, mapAcquireErr(err, CodeNoAccount)
+		}
+		credential := lease.Credential()
+		quota, quotaErr := s.quota(ctx, credential, "")
+		if quotaErr == nil && quota.MaxVideoSeconds >= videoDurationSeconds && quota.Video720p {
+			return lease, nil
+		}
+		lease.Release()
+		if quotaErr != nil && quotaErr.Code == CodeStatsigUnavailable {
+			return nil, quotaErr
+		}
+		excluded[credential.ID] = true
+	}
+	return nil, notSent(CodeNoAccount, http.StatusServiceUnavailable)
 }
 
 // resolvePost checks the caller's pin and label before anything leaves P3.
@@ -485,7 +515,7 @@ func (s *Service) sendInPost(ctx context.Context, caller Caller, conversationID,
 	}
 	// Post-context check: every conversation the stream named, and the new
 	// asset's own record, must be the post's.
-	contextLost := false
+	contextLost, accountMismatch := false, false
 	for _, id := range stream.ConversationIDs {
 		if id != conversationID {
 			contextLost = true
@@ -497,8 +527,17 @@ func (s *Service) sendInPost(ctx context.Context, caller Caller, conversationID,
 		} else if !contextLost {
 			result.ContextVerified = true
 		}
+		// The pool-rotation tripwire: the new item must belong to the user
+		// the post was created by (keyed hashes only, sec-rowan N3).
+		if owner.OwnerUserHash != "" && record.OwnerUserID != "" && s.labels.UserHash(record.OwnerUserID) != owner.OwnerUserHash {
+			accountMismatch = true
+		}
 	} else if len(stream.ConversationIDs) > 0 && !contextLost {
 		result.ContextVerified = true
+	}
+	if accountMismatch {
+		result.ContextVerified = false
+		return nil, s.logged(op, conversationID, credential.ID, &Error{Code: CodeAccountMismatch, Status: http.StatusBadGateway, Send: Sent, Result: result})
 	}
 	if contextLost {
 		result.ContextVerified = false

@@ -353,3 +353,36 @@ func TestCreateDroppedAfterConversationStillPins(t *testing.T) {
 		t.Fatalf("free read after an unknown create: %v", err)
 	}
 }
+
+// A new post goes only to an account whose free quota read confirms 15 s at
+// 720p; a 6 s account is skipped, and with none eligible nothing is sent.
+func TestCreatePostChoosesAnAccountThatCanMake15s720p(t *testing.T) {
+	h := newDefaultHarness(t)
+	h.fake.SetQuota(ssoA, fakegrok.Quota{MaxVideoSeconds: 6, Video720p: true})
+	result := h.createPost("job-c")
+	owner, err := h.service.Store().Owner(h.ctx, result.PostID)
+	if err != nil || owner.AccountID != accountB || result.AccountLabel != h.service.labels.AccountLabel(accountB) {
+		t.Fatalf("owner = %+v err = %v, want the 15 s account B", owner, err)
+	}
+	h2 := newDefaultHarness(t)
+	h2.fake.SetQuota(ssoA, fakegrok.Quota{MaxVideoSeconds: 6, Video720p: true})
+	h2.fake.SetQuota(ssoB, fakegrok.Quota{MaxVideoSeconds: 15})
+	_, err = h2.service.CreatePost(h2.ctx, h2.caller, CreateInput{JobID: "job-none", Prompt: "p", Image: pngImage()})
+	if errCode(err) != CodeNoAccount || errSend(err) != NotSent || h2.fake.Sends() != 0 || h2.fake.Count(http.MethodPost, `^/http/upload`) != 0 {
+		t.Fatalf("no eligible account: err = %v, sends = %d", err, h2.fake.Sends())
+	}
+}
+
+// The pool-rotation tripwire: an item that comes back owned by another user
+// than the post's creator is account_mismatch (sent), item kept.
+func TestEditResultOwnedByAnotherUserIsAccountMismatch(t *testing.T) {
+	h := newDefaultHarness(t)
+	h.fake.SetUserID(ssoA, "user-a")
+	post := h.createPost("job-c")
+	h.fake.SetUserID(ssoA, "user-other")
+	_, err := h.service.EditInPost(h.ctx, h.caller, post.PostID, h.label(), EditInput{JobID: "job-e", Prompt: "x", SourceAssetID: post.AssetIDs[0]})
+	var failure *Error
+	if errCode(err) != CodeAccountMismatch || errSend(err) != Sent || !asError(err, &failure) || failure.Result == nil || len(failure.Result.AssetIDs) == 0 {
+		t.Fatalf("mismatch: %v (%+v)", err, failure)
+	}
+}

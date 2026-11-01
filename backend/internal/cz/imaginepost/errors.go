@@ -43,6 +43,7 @@ const (
 	CodeRateLimited              = "rate_limited"
 	CodeGenerationFailed         = "generation_failed"
 	CodePostContextLost          = "post_context_lost"
+	CodeAccountMismatch          = "account_mismatch"
 	CodeOutcomeUnknown           = "outcome_unknown"
 	CodeUpstreamUnreadable       = "upstream_unreadable"
 	CodeInternal                 = "internal_error"
@@ -71,11 +72,17 @@ type Error struct {
 }
 
 func (e *Error) Error() string {
+	if e == nil {
+		return "imaginepost: <nil>"
+	}
 	return fmt.Sprintf("imaginepost: %s (%s)", e.Code, e.Send)
 }
 
 // Message is the fixed, P3-written text for a code.
 func (e *Error) Message() string {
+	if e == nil {
+		return ""
+	}
 	if text, ok := messages[e.Code]; ok {
 		return text
 	}
@@ -105,6 +112,7 @@ var messages = map[string]string{
 	CodeRateLimited:              "grok.com rate-limited the call",
 	CodeGenerationFailed:         "grok.com ended the generation without a result",
 	CodePostContextLost:          "the result came back outside the post's conversation",
+	CodeAccountMismatch:          "the result belongs to another account than the post's pinned one",
 	CodeOutcomeUnknown:           "the send may have reached grok.com; do not retry it",
 	CodeUpstreamUnreadable:       "grok.com's answer could not be read",
 	CodeInternal:                 "an internal error stopped the call",

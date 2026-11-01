@@ -46,13 +46,13 @@ func (s *Service) CZAcquireImaginePinned(ctx context.Context, accountID uint64, 
 }
 
 // CZAcquireImagineNew chooses an account for a new post, inside the key's
-// account scope, through the ordinary selector.
-func (s *Service) CZAcquireImagineNew(ctx context.Context, upstreamModel, quotaMode string, scope clientkeydomain.AccountScope) (*CZImagineLease, error) {
+// account scope, through the ordinary selector, skipping excluded accounts.
+func (s *Service) CZAcquireImagineNew(ctx context.Context, upstreamModel, quotaMode string, scope clientkeydomain.AccountScope, excluded map[uint64]bool) (*CZImagineLease, error) {
 	route, err := s.models.GetByProviderUpstream(ctx, account.ProviderWeb, upstreamModel)
 	if err != nil {
 		return nil, err
 	}
-	lease, err := s.selector.AcquireForKey(ctx, account.ProviderWeb, route.ID, route.UpstreamModel, quotaMode, "", nil, false, scope)
+	lease, err := s.selector.AcquireForKey(ctx, account.ProviderWeb, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, scope)
 	if err != nil {
 		return nil, err
 	}

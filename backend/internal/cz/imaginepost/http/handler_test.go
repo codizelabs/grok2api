@@ -42,7 +42,7 @@ type refusingPool struct{}
 func (refusingPool) AcquirePinned(context.Context, uint64, imaginepost.Purpose, clientkeydomain.AccountScope) (imaginepost.Lease, error) {
 	return nil, errors.New("refused")
 }
-func (refusingPool) AcquireNew(context.Context, imaginepost.Purpose, clientkeydomain.AccountScope) (imaginepost.Lease, error) {
+func (refusingPool) AcquireNew(context.Context, imaginepost.Purpose, clientkeydomain.AccountScope, map[uint64]bool) (imaginepost.Lease, error) {
 	return nil, errors.New("refused")
 }
 func (refusingPool) Report(context.Context, account.Credential, int) {}

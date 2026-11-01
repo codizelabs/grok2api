@@ -95,15 +95,24 @@ func (p *fakePool) AcquirePinned(_ context.Context, accountID uint64, _ Purpose,
 	return poolLease{credential: credential}, nil
 }
 
-func (p *fakePool) AcquireNew(_ context.Context, _ Purpose, _ clientkeydomain.AccountScope) (Lease, error) {
+// AcquireNew offers newAccount first, then the other account, skipping
+// excluded ones; newAccount 0 refuses.
+func (p *fakePool) AcquireNew(_ context.Context, _ Purpose, _ clientkeydomain.AccountScope, excluded map[uint64]bool) (Lease, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	credential, ok := p.credentials[p.newAccount]
-	if !ok {
+	if p.newAccount == 0 {
 		return nil, refusedErr{status: http.StatusServiceUnavailable}
 	}
-	p.acquired = append(p.acquired, p.newAccount)
-	return poolLease{credential: credential}, nil
+	order := []uint64{p.newAccount, accountA, accountB}
+	for _, id := range order {
+		credential, ok := p.credentials[id]
+		if !ok || excluded[id] {
+			continue
+		}
+		p.acquired = append(p.acquired, id)
+		return poolLease{credential: credential}, nil
+	}
+	return nil, refusedErr{status: http.StatusServiceUnavailable}
 }
 
 func (p *fakePool) Report(_ context.Context, _ account.Credential, status int) {

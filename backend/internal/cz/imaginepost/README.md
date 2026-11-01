@@ -33,6 +33,7 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 | `post_not_found` | 404 | not_sent | the post isn't pinned for this key, or grok.com answers 404 |
 | `item_not_in_post` | 422 | not_sent | the item or the parent isn't in the post |
 | `post_in_flight` | 409 | not_sent | the free re-read shows an in-flight response, or omits `inflightResponses` (fail closed) |
+| `account_unavailable` | 503 | not_sent | no account in the key's scope passes the create checks (below); nothing is uploaded or sent |
 | `account_busy` | 429 | not_sent | the account already has a send in flight (one per account, ADR-0002 § 6 Q1) |
 | `job_id_required` / `job_id_reused` | 400 / 409 | not_sent | each `job_id` is used once, ever, per client key, and the record survives restarts |
 | `spec_unsupported` | 422 | not_sent | a video spec other than 15 s at 720p |
@@ -42,6 +43,7 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 | `rate_limited` / `upstream_rejected` | 429 / 502 | not_sent | grok.com answered a 4xx before any stream |
 | `generation_failed` | 502 | sent | the stream ended in a `streamError` or moderation |
 | `post_context_lost` | 502 | sent | the stream, or the new asset's record, names another conversation |
+| `account_mismatch` | 502 | sent | the new item's owner (compared by keyed hash) isn't the user who created the post: the pool-rotation tripwire |
 | `outcome_unknown` | 502 | unknown | the stream dropped, a 5xx came back, or the transport failed mid-send. **Never retry** |
 
 ## Rules the code enforces
@@ -59,12 +61,13 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
   Everything else is refused, and so is any send body that contains `makePublic`. The transport in package `web` refuses anything outside `/rest/` a second time.
 - **Pin with no fallback** (sec-rowan B3). The `cz_imagine_post_owner` row (`conversation_id` PK, `account_id`, `client_key_id`, `owner_user_hash`, `created_at`) is written once and never updated. Every call leases only that account, through `gateway.Service.CZAcquireImaginePinned` (which calls `AcquirePinnedForKey`). If the pool hands back any other account, P3 refuses.
 - **Statsig on every `/rest/` call**, reads included, failing closed. There is no replay, not even the upstream code-7 retry (sec-rowan N1).
-- **One send per job_id**, in the `cz_imagine_send_key` table, reserved just before the upload and send.
+- **One send per job_id**, in the `cz_imagine_send_key` table. A create reserves it before choosing an account; an in-post send reserves it after the free re-read, just before the upload and send. A reserved id is never released, whatever the outcome.
 - **Every in-post send re-reads the post first** (free), so the parent `head` is the newest response.
 - **Post-context check after every send**: every conversation id the stream names, and the new asset's `currentConversationId`, must be the post's.
 - **Logging and storage** (sec-rowan B5):
   - Logs carry the op, the code, the account label and an 8-hex keyed reference of the conversation id.
-  - Logs never carry prompts, `message` or `mediaGenInput`, URLs, `ownerUserId`, titles, tokens, cookies or statsig values.
+  - Logs never carry prompts, `message` or `mediaGenInput`, URLs, `ownerUserId`, titles, tokens, cookies or statsig values. In Statsig `url` mode the transport signs through its own `czApplySignedStatsig`, whose logs name the endpoint with ids replaced (`/rest/assets/{id}`); upstream's signer logs, which print the path, are never reached from P3.
+  - The configured `url`-mode signer receives the full request URL, ids included, as it does for every upstream call: it must be an internal service.
   - The `cz_imagine_call` audit rows keep a body hash, never a body, and are pruned after 24 h (`audit.retentionDays: 1`; startup warns if the deployment sets another value).
 - **Segments**: `cachedOnly: true` only, at most 512 objects, and `maskUrl` is never read.
 
@@ -73,10 +76,12 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 Each one is a default, not a new design.
 
 1. **Text-only create is refused** (`capability_unsupported`). Grok makes text-only images over the imagine WebSocket, which isn't on the allow-list, and its in-post behaviour is unknown. A character's post starts from an uploaded anchor.
-2. **The account for a new post** comes from grok2api's ordinary selector inside the key's scope. ADR-0002 § 1 asks for a deterministic ranking: fewest open pinned posts, then remaining quota, then account id. That ranking is not built yet (open question for arch-theo).
-3. **`maxVideoDurationSeconds` absent means `spec_unconfirmable`** (fail closed). Where `quota_info` carries the field is provisional.
+2. **The account for a new post** is the first one grok2api's ordinary selector offers inside the key's scope whose free `quota_info` read confirms 15 s at 720p; up to 4 accounts are tried, each excluded after a failed check. Not built yet (open questions): ADR-0002 § 1's deterministic ranking (fewest open pinned posts, then remaining quota, then account id), and a "pinned-only" mark that keeps an account (the owner's main one, if O7 becomes yes) from ever getting new posts. Under O7's default that account isn't in the pool.
+3. **`maxVideoDurationSeconds` absent means `spec_unconfirmable`** (fail closed), and with decision 2 it also means no account can create a post. Where `quota_info` carries the field is provisional: if the spike shows the answer never carries it, change `parseQuota` and the fake together.
 4. **The parent `head`** is the newest response by `createTime`, because the list doesn't name the container's `lastResponseId` (provisional).
 5. **`skipCancelCurrentInflightRequests: true`** in in-post sends, so a send never cancels another response (provisional, U1).
+6. **Account labels and owner hashes are keyed by `secrets.credentialEncryptionKey`.** Rotating that key changes every label and hash, so every existing post then answers `account_label_mismatch`. Treat a key rotation as breaking for posts.
+7. **`context_verified: false` on success** means the stream named no conversation and the free asset re-read failed. The layer must treat such an item as unverified and verify it with a later free read.
 
 ## Upstream files P3 changes, and why
 
@@ -86,6 +91,8 @@ Each one is a default, not a new design.
 | `internal/transport/http/server.go` | +3 | one import, one `Dependencies` field, one `registerCZImaginePost` call |
 | `internal/app/application.go` | +3 −1 | build P3 after the gateway, reload its config, pass it to the router |
 | `internal/infra/config/config.go` | +1 | the `cz` section (strict YAML needs the field) |
+
+**What the `video.go` fix doesn't cover (open question for arch-theo and sec-rowan):** on upstream's `/v1/videos` path, a create-stage failure on attempt 0 (one that grok2api treats as not sent) is still retried on another account, as upstream designs it. Extending the pin to every attempt makes upstream's own test `TestVideoWebForbiddenRetriesPinnedAccountOnceThenFailsOver` (`application/gateway/video_test.go:786`) fail, so P3 doesn't do it: committed tests aren't edited to pass. P3's post path never uses that loop. Every post send goes through `imaginepost`, which has no reselect at all.
 
 **New files in upstream packages** never conflict on a pull:
 

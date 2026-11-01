@@ -50,7 +50,7 @@ func TestCZImaginePinnedLeaseNeverFallsBack(t *testing.T) {
 
 func TestCZImagineNewLeaseStaysInScope(t *testing.T) {
 	h := newCZPinHarness(t)
-	lease, err := h.service.CZAcquireImagineNew(h.ctx, "grok-imagine-video", "", h.key.AccountScope())
+	lease, err := h.service.CZAcquireImagineNew(h.ctx, "grok-imagine-video", "", h.key.AccountScope(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
