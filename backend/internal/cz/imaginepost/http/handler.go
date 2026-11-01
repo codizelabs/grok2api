@@ -31,6 +31,7 @@ func NewHandler(service *imaginepost.Service) *Handler { return &Handler{service
 // Register adds P3's routes to a group already guarded by client-key auth.
 func (h *Handler) Register(group *gin.RouterGroup) {
 	group.POST("/posts", h.create)
+	group.POST("/posts/import", h.importPost)
 	group.POST("/posts/:post/edits", h.edit)
 	group.POST("/posts/:post/videos", h.video)
 	group.GET("/posts/:post/items", h.items)
@@ -296,4 +297,34 @@ func (h *Handler) quota(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, quota)
+}
+
+type importIn struct {
+	ConversationID string `json:"conversation_id"`
+	AccountLabel   string `json:"account_label"`
+}
+
+// importPost pins an existing grok.com post after a free read (no sends).
+// 201 when it pinned the post now, 200 when it was already pinned.
+func (h *Handler) importPost(c *gin.Context) {
+	who, ok := caller(c)
+	if !ok {
+		unauthorized(c)
+		return
+	}
+	var input importIn
+	if c.ShouldBindJSON(&input) != nil {
+		badRequest(c)
+		return
+	}
+	result, err := h.service.ImportPost(c.Request.Context(), who, imaginepost.ImportInput{ConversationID: input.ConversationID, AccountLabel: input.AccountLabel})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	status := http.StatusOK
+	if result.Imported {
+		status = http.StatusCreated
+	}
+	c.JSON(status, result)
 }
