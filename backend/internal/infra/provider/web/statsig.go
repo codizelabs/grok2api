@@ -477,13 +477,13 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 	if err == nil {
 		request.Header.Set("x-statsig-id", value)
 		if source == "refresh" {
-			a.log().Info("web_statsig_refreshed", "mode", cfg.StatsigMode, "method", request.Method, "path", request.URL.EscapedPath())
+			a.log().Info("web_statsig_refreshed", "mode", cfg.StatsigMode, "method", request.Method, "path", czImagineEndpoint(request.URL.EscapedPath()))
 		} else if source == "stale" {
-			a.log().Warn("web_statsig_refresh_failed_using_stale", "mode", cfg.StatsigMode, "method", request.Method, "path", request.URL.EscapedPath())
+			a.log().Warn("web_statsig_refresh_failed_using_stale", "mode", cfg.StatsigMode, "method", request.Method, "path", czImagineEndpoint(request.URL.EscapedPath()))
 		}
 		return nil
 	}
-	a.log().Warn("web_statsig_fetch_failed", "mode", cfg.StatsigMode, "method", request.Method, "path", request.URL.EscapedPath(), "reason", provider.StatsigUnavailableReason(err))
+	a.log().Warn("web_statsig_fetch_failed", "mode", cfg.StatsigMode, "method", request.Method, "path", czImagineEndpoint(request.URL.EscapedPath()), "reason", provider.StatsigUnavailableReason(err))
 	return err
 }
 
@@ -587,7 +587,7 @@ func (a *Adapter) invalidateSignedStatsig(method, target string) bool {
 		return false
 	}
 	if parsed, err := url.Parse(target); err == nil {
-		a.log().Info("web_statsig_invalidated", "mode", cfg.StatsigMode, "method", method, "path", parsed.EscapedPath())
+		a.log().Info("web_statsig_invalidated", "mode", cfg.StatsigMode, "method", method, "path", czImagineEndpoint(parsed.EscapedPath()))
 	}
 	return true
 }
