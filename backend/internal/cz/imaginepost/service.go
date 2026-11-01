@@ -193,18 +193,18 @@ type SendResult struct {
 
 // ItemFacts is one free read of an item's asset record.
 type ItemFacts struct {
-	PostID          string `json:"post_id"`
-	AssetID         string `json:"asset_id"`
-	ResponseID      string `json:"response_id,omitempty"`
-	MIMEType        string `json:"mime_type"`
-	Width           int    `json:"width"`
-	Height          int    `json:"height"`
-	OwnedByPinned   *bool  `json:"owned_by_pinned_account,omitempty"`
-	IsPublic        bool   `json:"is_public"`
-	Shared          bool   `json:"shared"`
-	InPost          bool   `json:"in_post"`
-	AccountLabel    string `json:"account_label"`
-	assetKey        string
+	PostID        string `json:"post_id"`
+	AssetID       string `json:"asset_id"`
+	ResponseID    string `json:"response_id,omitempty"`
+	MIMEType      string `json:"mime_type"`
+	Width         int    `json:"width"`
+	Height        int    `json:"height"`
+	OwnedByPinned *bool  `json:"owned_by_pinned_account,omitempty"`
+	IsPublic      bool   `json:"is_public"`
+	Shared        bool   `json:"shared"`
+	InPost        bool   `json:"in_post"`
+	AccountLabel  string `json:"account_label"`
+	assetKey      string
 }
 
 var (
@@ -263,7 +263,9 @@ func (s *Service) CreatePost(ctx context.Context, caller Caller, input CreateInp
 	}
 	state := string(NotSent)
 	postRef := ""
-	defer func() { _ = s.store.FinishJob(context.WithoutCancel(ctx), caller.ClientKeyID, input.JobID, state, postRef) }()
+	defer func() {
+		_ = s.store.FinishJob(context.WithoutCancel(ctx), caller.ClientKeyID, input.JobID, state, postRef)
+	}()
 
 	fileID, uploadErr := s.upload(ctx, credential, *input.Image)
 	if uploadErr != nil {
@@ -926,4 +928,3 @@ func (s *Service) logged(op, conversationID string, accountID uint64, failure *E
 func (s *Service) logOK(op, conversationID string, accountID uint64) {
 	s.logger.Info("cz_imagine_call", "op", op, "post", s.labels.Ref(conversationID), "account", s.labels.AccountLabel(accountID))
 }
-

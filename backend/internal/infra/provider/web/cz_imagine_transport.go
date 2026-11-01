@@ -132,7 +132,10 @@ type czOnceCloser func() error
 
 func (f czOnceCloser) Close() error { return f() }
 
-func (a *Adapter) czImagineRejection(response *http.Response, lease interface{ InvalidateClearance(); Release() }, method, target string) error {
+func (a *Adapter) czImagineRejection(response *http.Response, lease interface {
+	InvalidateClearance()
+	Release()
+}, method, target string) error {
 	defer lease.Release()
 	captured, _ := io.ReadAll(io.LimitReader(response.Body, webMediaDiagnosticBodyLimit+1))
 	_ = response.Body.Close()

@@ -41,7 +41,7 @@ func (SendKey) TableName() string { return "cz_imagine_send_key" }
 // CallRecord is P3's audit row for one grok.com call: a body hash and codes,
 // never a body, prompt, title, ownerUserId, URL or raw id (sec-rowan B5).
 type CallRecord struct {
-	ID             uint64 `gorm:"primaryKey;autoIncrement"`
+	ID             uint64    `gorm:"primaryKey;autoIncrement"`
 	At             time.Time `gorm:"index;not null"`
 	Op             string    `gorm:"size:16;not null"`
 	AccountID      uint64
