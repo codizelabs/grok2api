@@ -8,7 +8,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/config"
 )
 
-func TestCZP5LoadPersistedURLModeWithoutSignerLoadsLocal(t *testing.T) {
+func TestCZP5LoadPersistedURLModeWithoutSignerLoadsBrowser(t *testing.T) {
 	cfg := testConfig(t)
 	value := toDomainConfig(cfg)
 	value.ProviderWeb.StatsigMode = config.StatsigModeURL
@@ -18,8 +18,8 @@ func TestCZP5LoadPersistedURLModeWithoutSignerLoadsLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPersisted(url mode, no signer URL): %v", err)
 	}
-	if got := loaded.Provider.Web.StatsigMode; got != config.StatsigModeLocal {
-		t.Fatalf("loaded StatsigMode = %q, want %q", got, config.StatsigModeLocal)
+	if got := loaded.Provider.Web.StatsigMode; got != config.StatsigModeBrowser {
+		t.Fatalf("loaded StatsigMode = %q, want %q", got, config.StatsigModeBrowser)
 	}
 }
 
@@ -38,7 +38,7 @@ func TestCZP5LoadPersistedURLModeWithSignerStaysURL(t *testing.T) {
 	}
 }
 
-func TestCZP5UpdateURLModeWithoutSignerSavesLocal(t *testing.T) {
+func TestCZP5UpdateURLModeWithoutSignerSavesBrowser(t *testing.T) {
 	cfg := testConfig(t)
 	repository := &runtimeSettingsRepositoryStub{}
 	var applied config.Config
@@ -51,18 +51,18 @@ func TestCZP5UpdateURLModeWithoutSignerSavesLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update(url mode, no signer URL): %v", err)
 	}
-	if got := repository.value.ProviderWeb.StatsigMode; got != config.StatsigModeLocal {
-		t.Fatalf("persisted StatsigMode = %q, want %q", got, config.StatsigModeLocal)
+	if got := repository.value.ProviderWeb.StatsigMode; got != config.StatsigModeBrowser {
+		t.Fatalf("persisted StatsigMode = %q, want %q", got, config.StatsigModeBrowser)
 	}
-	if got := snapshot.Config.ProviderWeb.StatsigMode; got != config.StatsigModeLocal {
-		t.Fatalf("snapshot StatsigMode = %q, want %q", got, config.StatsigModeLocal)
+	if got := snapshot.Config.ProviderWeb.StatsigMode; got != config.StatsigModeBrowser {
+		t.Fatalf("snapshot StatsigMode = %q, want %q", got, config.StatsigModeBrowser)
 	}
-	if got := applied.Provider.Web.StatsigMode; got != config.StatsigModeLocal {
-		t.Fatalf("applied StatsigMode = %q, want %q", got, config.StatsigModeLocal)
+	if got := applied.Provider.Web.StatsigMode; got != config.StatsigModeBrowser {
+		t.Fatalf("applied StatsigMode = %q, want %q", got, config.StatsigModeBrowser)
 	}
 }
 
-func TestCZP5MergeEditableURLModeWithoutSignerIsLocal(t *testing.T) {
+func TestCZP5MergeEditableURLModeWithoutSignerIsBrowser(t *testing.T) {
 	cfg := testConfig(t)
 	input := toEditable(cfg)
 	input.ProviderWeb.StatsigMode = config.StatsigModeURL
@@ -71,8 +71,8 @@ func TestCZP5MergeEditableURLModeWithoutSignerIsLocal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergeEditable: %v", err)
 	}
-	if got := next.Provider.Web.StatsigMode; got != config.StatsigModeLocal {
-		t.Fatalf("merged StatsigMode = %q, want %q", got, config.StatsigModeLocal)
+	if got := next.Provider.Web.StatsigMode; got != config.StatsigModeBrowser {
+		t.Fatalf("merged StatsigMode = %q, want %q", got, config.StatsigModeBrowser)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestCZP5UpdateLocalModeRoundTrips(t *testing.T) {
 	if _, err := service.Update(context.Background(), service.Get().Revision, input); err != nil {
 		t.Fatalf("Update(local): %v", err)
 	}
-	if got := repository.value.ProviderWeb.StatsigMode; got != config.StatsigModeLocal {
-		t.Fatalf("persisted StatsigMode = %q, want %q", got, config.StatsigModeLocal)
+	if got := repository.value.ProviderWeb.StatsigMode; got != config.StatsigModeLocalStored {
+		t.Fatalf("persisted StatsigMode = %q, want %q", got, config.StatsigModeLocalStored)
 	}
 	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
 	if err != nil {

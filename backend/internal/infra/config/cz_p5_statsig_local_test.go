@@ -13,8 +13,8 @@ func TestCZP5ResolveStatsigMode(t *testing.T) {
 	tests := []struct {
 		mode, signerURL, want string
 	}{
-		{"url", "", "local"},
-		{"url", "   ", "local"},
+		{"url", "", "browser"},
+		{"url", "   ", "browser"},
 		{"url", "https://x", "url"},
 		{"manual", "", "manual"},
 		{"local", "", "local"},
@@ -28,10 +28,9 @@ func TestCZP5ResolveStatsigMode(t *testing.T) {
 	}
 }
 
-func TestCZP5DefaultStatsigModeIsLocal(t *testing.T) {
-	if got := defaultConfig().Provider.Web.StatsigMode; got != StatsigModeLocal {
-		t.Fatalf("default StatsigMode = %q, want %q", got, StatsigModeLocal)
-	}
+// P5b: the default is "browser" (TestCZP5bDefaultStatsigModeIsBrowser);
+// "local" stays a valid, explicit choice.
+func TestCZP5LocalModeConstant(t *testing.T) {
 	if StatsigModeLocal != "local" {
 		t.Fatalf("StatsigModeLocal = %q, want %q", StatsigModeLocal, "local")
 	}
