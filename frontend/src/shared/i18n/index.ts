@@ -2377,10 +2377,13 @@ Object.assign(resources.en.translation.settings.web as unknown as Record<string,
   clearanceModeHelp: "Maintain Clearance manually, refresh it proactively with FlareSolverr, or solve on demand only after an explicit upstream rejection.",
   clearanceOnDemand: "On demand",
 });
+// CodizeLabs: a new key, so the "zh-CN" that older builds saved automatically on first load is ignored.
+const LANGUAGE_KEY = "grok2api:language:v2";
+
 function readStoredLanguage(): string | null {
   if (typeof window === "undefined") return null;
   try {
-    return window.localStorage.getItem("grok2api:language");
+    return window.localStorage.getItem(LANGUAGE_KEY);
   } catch {
     return null;
   }
@@ -2389,7 +2392,7 @@ function readStoredLanguage(): string | null {
 function storeLanguage(language: string): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem("grok2api:language", language);
+    window.localStorage.setItem(LANGUAGE_KEY, language);
   } catch {
     // Language changes still apply when browser storage is unavailable.
   }
