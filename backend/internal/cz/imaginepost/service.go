@@ -272,6 +272,16 @@ func (s *Service) CreatePost(ctx context.Context, caller Caller, input CreateInp
 	stream, sendErr := s.send(ctx, credential, "create", "", pathCreate, buildCreateBody(input.Prompt, []string{fileID}, input.AspectRatio))
 	if sendErr != nil {
 		state = string(sendErr.Send)
+		// A send that may have made a post still pins it, so a later free
+		// read on the same account can find out what happened.
+		if sendErr.Send != NotSent && len(stream.ConversationIDs) > 0 && validID.MatchString(stream.ConversationIDs[0]) {
+			conversationID := stream.ConversationIDs[0]
+			postRef = s.labels.Ref(conversationID)
+			if err := s.store.PutOwner(context.WithoutCancel(ctx), PostOwner{ConversationID: conversationID, AccountID: credential.ID, ClientKeyID: caller.ClientKeyID}); err != nil {
+				s.logger.Error("cz_imagine_owner_write_failed", "post", postRef)
+			}
+			sendErr.Result = &SendResult{PostID: conversationID, AccountLabel: s.labels.AccountLabel(credential.ID), Kind: "image", AssetIDs: stream.AssetIDs}
+		}
 		return nil, s.logged("create", "", credential.ID, sendErr)
 	}
 	state = string(Sent)
@@ -805,11 +815,11 @@ func (s *Service) send(ctx context.Context, credential account.Credential, op, c
 	case parseErr != nil:
 		mapped := fail(CodeOutcomeUnknown, http.StatusBadGateway, Unknown)
 		s.record(ctx, op, conversationID, credential, http.MethodPost, path, mapped)
-		return streamResult{}, mapped
+		return stream, mapped
 	case stream.Failed || stream.Moderated:
 		mapped := &Error{Code: CodeGenerationFailed, Status: http.StatusBadGateway, Send: Sent, ProviderText: stream.ProviderText}
 		s.record(ctx, op, conversationID, credential, http.MethodPost, path, mapped)
-		return streamResult{}, mapped
+		return stream, mapped
 	}
 	s.record(ctx, op, conversationID, credential, http.MethodPost, path, nil)
 	return stream, nil

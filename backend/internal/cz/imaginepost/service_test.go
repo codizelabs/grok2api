@@ -333,3 +333,23 @@ func TestOneSendPerAccountAtATime(t *testing.T) {
 	release()
 	h.createPost("job-after")
 }
+
+// A create whose stream drops after it named the conversation is
+// outcome_unknown, and the post is still pinned to its account so a free
+// read can settle it later.
+func TestCreateDroppedAfterConversationStillPins(t *testing.T) {
+	h := newDefaultHarness(t)
+	h.fake.SetFault(fakegrok.FaultDropAfterStart)
+	_, err := h.service.CreatePost(h.ctx, h.caller, CreateInput{JobID: "job-drop", Prompt: "p", Image: pngImage()})
+	var failure *Error
+	if errCode(err) != CodeOutcomeUnknown || errSend(err) != Unknown || !asError(err, &failure) || failure.Result == nil || failure.Result.PostID == "" {
+		t.Fatalf("dropped create: %v (%+v)", err, failure)
+	}
+	owner, ownerErr := h.service.Store().Owner(h.ctx, failure.Result.PostID)
+	if ownerErr != nil || owner.AccountID != accountA {
+		t.Fatalf("owner = %+v err = %v, want pinned to account A", owner, ownerErr)
+	}
+	if _, err := h.service.ListItems(h.ctx, h.caller, failure.Result.PostID, failure.Result.AccountLabel); err != nil {
+		t.Fatalf("free read after an unknown create: %v", err)
+	}
+}
