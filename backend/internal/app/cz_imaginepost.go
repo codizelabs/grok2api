@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
 	"github.com/chenyme/grok2api/backend/internal/cz/imaginepost"
@@ -33,6 +34,7 @@ func czImaginePostConfig(cfg config.Config) imaginepost.Config {
 	return imaginepost.Config{
 		AllowLike:            cfg.CZ.ImaginePost.AllowLike,
 		PinnedOnlyAccountIDs: append([]uint64(nil), cfg.CZ.ImaginePost.PinnedOnlyAccountIDs...),
+		DebugReplyShapeFile:  strings.TrimSpace(cfg.CZ.ImaginePost.DebugReplyShapeFile),
 	}
 }
 

@@ -45,6 +45,7 @@ const (
 	CodePostContextLost          = "post_context_lost"
 	CodeAccountMismatch          = "account_mismatch"
 	CodeOutcomeUnknown           = "outcome_unknown"
+	CodeProviderRefused          = "provider_refused"
 	CodeUpstreamUnreadable       = "upstream_unreadable"
 	CodeInternal                 = "internal_error"
 )
@@ -69,6 +70,9 @@ type Error struct {
 	ProviderText string
 	// Result carries what a sent-but-failed call produced (post_context_lost).
 	Result *SendResult
+	// replyUnrecognised marks an outcome_unknown whose send was answered with
+	// a 200 stream P3 could not read, so an in-post send re-reads the post.
+	replyUnrecognised bool
 }
 
 func (e *Error) Error() string {
@@ -114,6 +118,7 @@ var messages = map[string]string{
 	CodePostContextLost:          "the result came back outside the post's conversation",
 	CodeAccountMismatch:          "the result belongs to another account than the post's pinned one",
 	CodeOutcomeUnknown:           "the send may have reached grok.com; do not retry it",
+	CodeProviderRefused:          "grok.com answered the send without an image (a refusal); rebuild the prompt before a new send",
 	CodeUpstreamUnreadable:       "grok.com's answer could not be read",
 	CodeInternal:                 "an internal error stopped the call",
 }

@@ -15,4 +15,8 @@ type CZImaginePostConfig struct {
 	// already pinned to them and are never chosen for a new post (ADR-0002
 	// § 1, O7). Default empty.
 	PinnedOnlyAccountIDs []uint64 `yaml:"pinnedOnlyAccountIds"`
+	// DebugReplyShapeFile, when set, makes every imagine send append its
+	// reply JSON key structure (never a value, prompt, URL or id) to this
+	// file, to correct the provisional reply parser. Default empty: off.
+	DebugReplyShapeFile string `yaml:"debugReplyShapeFile"`
 }

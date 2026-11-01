@@ -119,11 +119,20 @@ var errStreamDropped = errors.New("stream ended before the final response")
 // conversation chunk, the model response and the streaming image or video
 // frames.
 func parseSendStream(source io.Reader) (streamResult, error) {
+	return parseSendStreamObserved(source, nil)
+}
+
+// parseSendStreamObserved is parseSendStream that also hands every non-empty
+// line to observe (the opt-in reply-shape capture), when observe is set.
+func parseSendStreamObserved(source io.Reader, observe func([]byte)) (streamResult, error) {
 	var out streamResult
 	reader := bufio.NewReaderSize(io.LimitReader(source, maxStreamBytes), 64<<10)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+			if observe != nil {
+				observe(trimmed)
+			}
 			out.consume(trimmed)
 		}
 		if err != nil {

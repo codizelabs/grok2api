@@ -83,6 +83,10 @@ type Config struct {
 	SendTimeout time.Duration
 	// ReadTimeout bounds one free read.
 	ReadTimeout time.Duration
+	// DebugReplyShapeFile, when set, appends each send's reply key structure
+	// (no values, prompts, URLs or ids) to this file (replyshape.go). Off by
+	// default.
+	DebugReplyShapeFile string
 }
 
 func (c Config) withDefaults() Config {
@@ -593,7 +597,12 @@ func (s *Service) sendInPost(ctx context.Context, caller Caller, conversationID,
 	if buildErr != nil {
 		return nil, s.logged(op, conversationID, credential.ID, buildErr)
 	}
+	sentAt := time.Now().UTC()
 	stream, sendErr := s.send(ctx, credential, op, conversationID, addResponsePath(conversationID), body)
+	if s.replyNeedsReRead(stream, sendErr) {
+		// The reply was not recognised: one free re-read settles it.
+		stream, sendErr = s.settleUnrecognised(ctx, credential, op, conversationID, snapshot, parent, sentAt, stream, sendErr)
+	}
 	if sendErr != nil {
 		state = string(sendErr.Send)
 		return nil, s.logged(op, conversationID, credential.ID, sendErr)
@@ -979,10 +988,21 @@ func (s *Service) send(ctx context.Context, credential account.Credential, op, c
 		return streamResult{}, mapped
 	}
 	defer response.Body.Close()
-	stream, parseErr := parseSendStream(response.Body)
+	captureFile := s.cfg().DebugReplyShapeFile
+	var capture *replyCapture
+	var observe func([]byte)
+	if captureFile != "" {
+		capture = newReplyCapture()
+		observe = capture.observe
+	}
+	stream, parseErr := parseSendStreamObserved(response.Body, observe)
+	if capture != nil {
+		s.writeReplyCapture(captureFile, op, response.StatusCode, response.Header.Get("Content-Type"), parseErr == nil, capture)
+	}
 	switch {
 	case parseErr != nil:
 		mapped := fail(CodeOutcomeUnknown, http.StatusBadGateway, Unknown)
+		mapped.replyUnrecognised = true
 		s.record(ctx, op, conversationID, credential, http.MethodPost, path, mapped)
 		return stream, mapped
 	case stream.Failed || stream.Moderated:
