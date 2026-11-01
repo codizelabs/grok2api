@@ -140,13 +140,10 @@ func (a *Adapter) czApplySignedStatsig(ctx context.Context, request *http.Reques
 		request.Header.Set("x-statsig-id", strings.TrimSpace(cfg.StatsigManualValue))
 		return nil
 	}
-	if a.statsig == nil {
-		return fmt.Errorf("%w: signer not initialised", provider.ErrStatsigUnavailable)
-	}
-	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String())
+	value, source, err := a.signStatsig(ctx, cfg, token, lease, request.Method, request.URL.String())
 	if err != nil {
-		a.log().Warn("cz_imagine_statsig_failed", "method", request.Method, "endpoint", czImagineEndpoint(path))
-		return fmt.Errorf("%w: signer failed", provider.ErrStatsigUnavailable)
+		a.log().Warn("cz_imagine_statsig_failed", "mode", cfg.StatsigMode, "method", request.Method, "endpoint", czImagineEndpoint(path), "reason", provider.StatsigUnavailableReason(err))
+		return err
 	}
 	request.Header.Set("x-statsig-id", value)
 	if source == "stale" {
@@ -189,6 +186,8 @@ func (a *Adapter) czImagineRejection(response *http.Response, lease interface {
 		// call; P3 never replays (sec-rowan N1) and never logs the path.
 		if cfg := a.config(); cfg.StatsigMode == "url" && a.statsig != nil {
 			a.statsig.Invalidate(cfg.BaseURL, cfg.StatsigSignerURL, method, target)
+		} else if cfg.StatsigMode == "local" && a.statsig != nil {
+			a.statsig.InvalidateLocal(cfg.BaseURL)
 		}
 	}
 	a.logWebMediaUpstreamRejection("cz_imagine", response, upstreamErr)

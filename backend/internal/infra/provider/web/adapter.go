@@ -64,7 +64,7 @@ func normalizedConfig(cfg Config) Config {
 		cfg.BaseURL = "https://grok.com"
 	}
 	if cfg.StatsigMode == "" {
-		cfg.StatsigMode = "url"
+		cfg.StatsigMode = "local"
 	}
 	if cfg.QuotaTimeoutSeconds <= 0 {
 		cfg.QuotaTimeoutSeconds = 25

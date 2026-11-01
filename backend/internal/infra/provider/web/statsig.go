@@ -30,7 +30,11 @@ const (
 	statsigResponseLimit   = 4 << 10
 )
 
-var errStatsigMetaMissing = errors.New("Grok index 缺少 grok-site-verification")
+var (
+	errStatsigMetaMissing  = errors.New("Grok index 缺少 grok-site-verification")
+	errStatsigPageStatus   = errors.New("grok.com page returned an error status")
+	errStatsigPageTooLarge = errors.New("grok.com page is larger than the safety limit")
+)
 
 type statsigCacheEntry struct {
 	value     string
@@ -52,9 +56,14 @@ type statsigSigner struct {
 	fetchMeta        func(context.Context, string, string, *infraegress.Lease) (string, error)
 	validateEndpoint func(context.Context, string) error
 	now              func() time.Time
-	mu               sync.Mutex
-	entries          map[string]statsigCacheEntry
-	refreshes        singleflight.Group
+	// fetchLocal and randomByte serve statsigMode "local" (statsig_local.go);
+	// tests replace them to fix the page and the random byte.
+	fetchLocal func(context.Context, string, string, *infraegress.Lease) (statsigLocalMaterial, error)
+	randomByte func() byte
+	mu         sync.Mutex
+	entries    map[string]statsigCacheEntry
+	local      map[string]statsigLocalEntry
+	refreshes  singleflight.Group
 }
 
 func newStatsigSigner() *statsigSigner {
@@ -66,7 +75,10 @@ func newStatsigSigner() *statsigSigner {
 		fetchMeta:        fetchStatsigMetaContent,
 		validateEndpoint: validateStatsigSignerEndpoint,
 		now:              time.Now,
+		fetchLocal:       fetchStatsigLocalMaterial,
+		randomByte:       randomStatsigByte,
 		entries:          make(map[string]statsigCacheEntry),
+		local:            make(map[string]statsigLocalEntry),
 	}
 }
 
@@ -172,6 +184,7 @@ func (s *statsigSigner) Invalidate(baseURL, signerURL, method, target string) {
 func (s *statsigSigner) Clear() {
 	s.mu.Lock()
 	clear(s.entries)
+	clear(s.local)
 	s.mu.Unlock()
 }
 
@@ -279,37 +292,60 @@ func fetchStatsigMetaContent(ctx context.Context, baseURL, token string, lease *
 }
 
 func fetchStatsigMetaContentWithDo(ctx context.Context, baseURL, token string, lease *infraegress.Lease, do func(*http.Request) (*http.Response, error)) (string, error) {
+	body, err := fetchStatsigPageWithDo(ctx, baseURL, token, lease, do)
+	if err != nil {
+		return "", err
+	}
+	return extractStatsigMetaContent(body)
+}
+
+// fetchStatsigPage GETs the grok.com page that carries the
+// grok-site-verification meta and returns its body.
+func fetchStatsigPage(ctx context.Context, baseURL, token string, lease *infraegress.Lease) ([]byte, error) {
+	if lease == nil {
+		return nil, fmt.Errorf("Statsig 获取缺少出口租约")
+	}
+	return fetchStatsigPageWithDo(ctx, baseURL, token, lease, lease.Do)
+}
+
+func fetchStatsigPageWithDo(ctx context.Context, baseURL, token string, lease *infraegress.Lease, do func(*http.Request) (*http.Response, error)) ([]byte, error) {
 	if do == nil {
-		return "", fmt.Errorf("Statsig 获取缺少出口租约")
+		return nil, fmt.Errorf("Statsig 获取缺少出口租约")
 	}
 	index, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/index", do)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if index.statusCode >= 200 && index.statusCode < 300 {
 		// A successful index response without the verification meta remains a hard
 		// protocol failure. Falling back here would hide a changed upstream page.
-		return extractStatsigMetaContent(index.body)
+		if _, extractErr := extractStatsigMetaContent(index.body); extractErr != nil {
+			return nil, extractErr
+		}
+		return index.body, nil
 	}
 	if index.statusCode != http.StatusNotFound {
-		return "", statsigMetaStatusError("/index", index.statusCode)
+		return nil, statsigMetaStatusError("/index", index.statusCode)
 	}
-	if content, extractErr := extractStatsigMetaContent(index.body); extractErr == nil {
-		return content, nil
+	if _, extractErr := extractStatsigMetaContent(index.body); extractErr == nil {
+		return index.body, nil
 	} else if !errors.Is(extractErr, errStatsigMetaMissing) {
-		return "", extractErr
+		return nil, extractErr
 	}
 
 	// /index currently returns a branded 404. Only that exact status with a
 	// missing meta is allowed to fall back to the canonical root page.
 	root, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/", do)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if root.statusCode < 200 || root.statusCode >= 300 {
-		return "", statsigMetaStatusError("/", root.statusCode)
+		return nil, statsigMetaStatusError("/", root.statusCode)
 	}
-	return extractStatsigMetaContent(root.body)
+	if _, extractErr := extractStatsigMetaContent(root.body); extractErr != nil {
+		return nil, extractErr
+	}
+	return root.body, nil
 }
 
 type statsigMetaResponse struct {
@@ -354,16 +390,16 @@ func fetchStatsigMetaResponse(ctx context.Context, baseURL, token string, lease 
 
 func statsigMetaStatusError(path string, statusCode int) error {
 	if path == "/" {
-		return fmt.Errorf("Grok 首页返回 %d", statusCode)
+		return fmt.Errorf("%w: Grok 首页返回 %d", errStatsigPageStatus, statusCode)
 	}
-	return fmt.Errorf("Grok index 返回 %d", statusCode)
+	return fmt.Errorf("%w: Grok index 返回 %d", errStatsigPageStatus, statusCode)
 }
 
 func statsigMetaOversizeError(path string) error {
 	if path == "/" {
-		return fmt.Errorf("Grok 首页超过安全上限")
+		return fmt.Errorf("%w: Grok 首页超过安全上限", errStatsigPageTooLarge)
 	}
-	return fmt.Errorf("Grok index 超过安全上限")
+	return fmt.Errorf("%w: Grok index 超过安全上限", errStatsigPageTooLarge)
 }
 
 func extractStatsigMetaContent(body []byte) (string, error) {
@@ -419,9 +455,11 @@ func validStatsigID(value string) bool {
 }
 
 // applySignedStatsig sets x-statsig-id on request. It fails closed: when no
-// valid value can be had from the configured source (manual value missing or
-// invalid, signer URL empty or invalid) it returns ErrStatsigUnavailable and
-// the caller must not send the request. There is no built-in signer URL.
+// valid value can be had from the configured source it returns an error that
+// wraps ErrStatsigUnavailable with a readable reason, and the caller must not
+// send the request. "local" computes the value in-process from grok.com's own
+// page; "url" asks a configured signer (there is no built-in signer URL);
+// "manual" sends a pasted value.
 func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request, token string, lease *infraegress.Lease) error {
 	if request == nil {
 		return nil
@@ -435,52 +473,83 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 		request.Header.Set("x-statsig-id", strings.TrimSpace(cfg.StatsigManualValue))
 		return nil
 	}
-	if a.statsig == nil {
-		return fmt.Errorf("%w: signer not initialised", provider.ErrStatsigUnavailable)
-	}
-	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String())
+	value, source, err := a.signStatsig(ctx, cfg, token, lease, request.Method, request.URL.String())
 	if err == nil {
 		request.Header.Set("x-statsig-id", value)
 		if source == "refresh" {
-			a.log().Info("web_statsig_refreshed", "method", request.Method, "path", request.URL.EscapedPath())
+			a.log().Info("web_statsig_refreshed", "mode", cfg.StatsigMode, "method", request.Method, "path", request.URL.EscapedPath())
 		} else if source == "stale" {
-			a.log().Warn("web_statsig_refresh_failed_using_stale", "method", request.Method, "path", request.URL.EscapedPath())
+			a.log().Warn("web_statsig_refresh_failed_using_stale", "mode", cfg.StatsigMode, "method", request.Method, "path", request.URL.EscapedPath())
 		}
 		return nil
 	}
-	a.log().Warn("web_statsig_fetch_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
-	return fmt.Errorf("%w: signer failed: %v", provider.ErrStatsigUnavailable, err)
+	a.log().Warn("web_statsig_fetch_failed", "mode", cfg.StatsigMode, "method", request.Method, "path", request.URL.EscapedPath(), "reason", provider.StatsigUnavailableReason(err))
+	return err
 }
 
-// statsigConfigUsable reports ErrStatsigUnavailable when the configured
-// Statsig source cannot produce a valid value, before any network call.
+// signStatsig produces a value for the "local" and "url" modes. Its error
+// always wraps ErrStatsigUnavailable with a readable reason; a url-mode
+// signer's own error text is not passed on (it is upstream-controlled).
+func (a *Adapter) signStatsig(ctx context.Context, cfg Config, token string, lease *infraegress.Lease, method, target string) (string, string, error) {
+	if a.statsig == nil {
+		return "", "", provider.NewStatsigUnavailable(provider.StatsigReasonNotInitialised)
+	}
+	if cfg.StatsigMode == "local" {
+		return a.statsig.SignLocal(ctx, cfg.BaseURL, token, lease, method, target)
+	}
+	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, method, target)
+	if err != nil {
+		if errors.Is(err, provider.ErrStatsigUnavailable) {
+			return "", "", err
+		}
+		if errors.Is(err, errStatsigMetaMissing) || errors.Is(err, errStatsigPageStatus) || errors.Is(err, errStatsigPageTooLarge) {
+			return "", "", statsigPageFetchError(err)
+		}
+		return "", "", provider.NewStatsigUnavailable(provider.StatsigReasonSignerFailed)
+	}
+	return value, source, nil
+}
+
+// statsigConfigUsable reports ErrStatsigUnavailable, with its reason, when the
+// configured Statsig source cannot produce a valid value, before any network
+// call. "local" needs no configuration.
 func statsigConfigUsable(cfg Config) error {
-	if cfg.StatsigMode == "manual" {
-		if !validStatsigID(strings.TrimSpace(cfg.StatsigManualValue)) {
-			return fmt.Errorf("%w: manual value missing or invalid", provider.ErrStatsigUnavailable)
+	switch cfg.StatsigMode {
+	case "local":
+		return nil
+	case "manual":
+		value := strings.TrimSpace(cfg.StatsigManualValue)
+		if value == "" {
+			return provider.NewStatsigUnavailable(provider.StatsigReasonManualMissing)
+		}
+		if !validStatsigID(value) {
+			return provider.NewStatsigUnavailable(provider.StatsigReasonManualInvalid)
 		}
 		return nil
+	case "url":
+		if strings.TrimSpace(cfg.StatsigSignerURL) == "" {
+			return provider.NewStatsigUnavailable(provider.StatsigReasonSignerURLEmpty)
+		}
+		if err := signerurl.Validate(cfg.StatsigSignerURL); err != nil {
+			return provider.NewStatsigUnavailable(provider.StatsigReasonSignerURLBad)
+		}
+		return nil
+	default:
+		return provider.NewStatsigUnavailable(provider.StatsigReasonUnknownMode)
 	}
-	if err := signerurl.Validate(cfg.StatsigSignerURL); err != nil {
-		return fmt.Errorf("%w: signer URL not configured or invalid", provider.ErrStatsigUnavailable)
-	}
-	return nil
 }
 
 // WarmStatsig 只使用一个 Web 账号和一个出口租约预热共享签名，不会逐账号访问上游。
 func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential) (int, error) {
 	cfg := a.config()
-	if cfg.StatsigMode == "manual" {
-		if !validStatsigID(strings.TrimSpace(cfg.StatsigManualValue)) {
-			return 0, fmt.Errorf("手动 Statsig 配置无效")
-		}
-		return 0, nil
-	}
 	if err := statsigConfigUsable(cfg); err != nil {
 		return 0, err
 	}
+	if cfg.StatsigMode == "manual" {
+		return 0, nil
+	}
 	if a.statsig == nil {
-		return 0, fmt.Errorf("Statsig 签名器未初始化")
+		return 0, provider.NewStatsigUnavailable(provider.StatsigReasonNotInitialised)
 	}
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
@@ -491,6 +560,9 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 		return 0, err
 	}
 	defer lease.Release()
+	if cfg.StatsigMode == "local" {
+		return a.statsig.WarmLocal(ctx, cfg.BaseURL, token, lease)
+	}
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	return a.statsig.Warm(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, []statsigWarmTarget{
 		{method: http.MethodPost, target: baseURL + "/rest/app-chat/conversations/new"},
@@ -499,14 +571,23 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 	})
 }
 
+// invalidateSignedStatsig forgets what produced a rejected value: the cached
+// signature (url) or the page material (local). Manual values are kept.
 func (a *Adapter) invalidateSignedStatsig(method, target string) bool {
 	cfg := a.config()
-	if cfg.StatsigMode == "url" && a.statsig != nil {
-		a.statsig.Invalidate(cfg.BaseURL, cfg.StatsigSignerURL, method, target)
-		if parsed, err := url.Parse(target); err == nil {
-			a.log().Info("web_statsig_invalidated", "method", method, "path", parsed.EscapedPath())
-		}
-		return true
+	if a.statsig == nil {
+		return false
 	}
-	return false
+	switch cfg.StatsigMode {
+	case "url":
+		a.statsig.Invalidate(cfg.BaseURL, cfg.StatsigSignerURL, method, target)
+	case "local":
+		a.statsig.InvalidateLocal(cfg.BaseURL)
+	default:
+		return false
+	}
+	if parsed, err := url.Parse(target); err == nil {
+		a.log().Info("web_statsig_invalidated", "mode", cfg.StatsigMode, "method", method, "path", parsed.EscapedPath())
+	}
+	return true
 }
