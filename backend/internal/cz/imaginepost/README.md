@@ -4,7 +4,7 @@ CodizeLabs fork patch P3 of grok2api. Decision: ADR-0002 in the AIFriend-gen rep
 
 A **post** is one grok.com conversation. Each edit or video is a new item (asset) in it. P3 pins every post, for life, to the account that created it. Every later call for the post runs on that account or not at all.
 
-**State:** built and tested against the fake grok.com in `fakegrok/`. Nothing has been sent to grok.com. The send-side request bodies and the stream format are **provisional**, read from grok.com's client code and never seen on the wire (unknowns U1, U2). Spike S-P (ADR-0002 § 7) records the real shapes. When it does, correct exactly two files, `wire_provisional.go` and `fakegrok/wire_provisional.go`.
+**State:** built and tested against the fake grok.com in `fakegrok/`. The tests never reach grok.com. One real in-post edit has run (1 Nov 2026): it succeeded, but its reply was not recognised (see "Unrecognised replies"). The send-side request bodies and the stream format are **provisional**, read from grok.com's client code and never seen on the wire (unknowns U1, U2). Spike S-P (ADR-0002 § 7) records the real shapes. When it does, correct exactly two files, `wire_provisional.go` and `fakegrok/wire_provisional.go`.
 
 ## Endpoints
 
@@ -13,6 +13,7 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 | Method, path | Body (JSON) | Sends? | Success |
 |---|---|---|---|
 | `POST /posts` | `job_id`, `prompt`, `image` {`mime_type`, `data_base64`}, `aspect_ratio`? | **yes**: an upload, then `conversations/new` | 201, `SendResult`: `post_id`, `account_label`, `kind`, `response_id`, `asset_ids`, `context_verified` |
+| `POST /posts/import` | `conversation_id`, `account_label`? | no (at most 4 free reads, no upload, no send) | 201 when pinned now, 200 when the post was already pinned for this key: `ImportResult`: `post_id`, `account_label`, `imported`, `head_response_id`, `item_count`. Pins a post made outside P3 (T6) |
 | `POST /posts/:post/edits` | `job_id`, `prompt`, `source_asset_id`, `parent` (`head` by default, `source`, or a response id), `references`[] (≤ 4 images), `aspect_ratio`? | **yes**: add-response | 201, `SendResult` plus `parent_response_id` and `source_asset_id` |
 | `POST /posts/:post/videos` | `job_id`, `prompt`, `source_asset_id`, `parent`, `duration_s` (**15 only**), `resolution` (**`720p` only**), `aspect_ratio`?, `mode`? | **yes**: add-response | 201, `SendResult` plus `duration_s` and `resolution` |
 | `GET /posts/:post/items` | none | no (one free read) | 200, `PostSnapshot`: `post_id`, `account_label`, `head_response_id`, `items`[] {`response_id`, `parent_response_id`, `sender`, `model`, `create_time`, `assets`[] {`asset_id`, `mime_type`, `width`, `height`}}, `inflight_known`, `inflight_count`, `read_at`. This one read serves both list and sync |
@@ -44,7 +45,8 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 | `generation_failed` | 502 | sent | the stream ended in a `streamError` or moderation |
 | `post_context_lost` | 502 | sent | the stream, or the new asset's record, names another conversation |
 | `account_mismatch` | 502 | sent | the new item's owner (compared by keyed hash) isn't the user who created the post: the pool-rotation tripwire |
-| `outcome_unknown` | 502 | unknown | the stream dropped, a 5xx came back, or the transport failed mid-send. **Never retry** |
+| `provider_refused` | 502 | sent | an in-post reply P3 did not recognise, and the free re-read shows the model answered with no image: Grok refused. Rebuild the prompt before a new send |
+| `outcome_unknown` | 502 | unknown | the stream dropped, a 5xx came back, or the transport failed mid-send, and for an in-post send the one free re-read did not settle it (see "Unrecognised replies"). **Never retry** |
 
 ## Rules the code enforces
 
@@ -60,10 +62,13 @@ All routes sit under `/cz/v1/imagine`. They use the same client-key auth (`Autho
 
   Everything else is refused, and so is any send body that contains `makePublic`. The transport in package `web` refuses anything outside `/rest/` a second time.
 - **Pin with no fallback** (sec-rowan B3). The `cz_imagine_post_owner` row (`conversation_id` PK, `account_id`, `client_key_id`, `owner_user_hash`, `created_at`) is written once; its account and key never change. The one update: when the read right after create failed, `owner_user_hash` is empty, and the first successful read of an item in the post (a read, or the source item before the next send) fills it, once, so the `account_mismatch` tripwire works from then on. Every call leases only that account, through `gateway.Service.CZAcquireImaginePinned` (which calls `AcquirePinnedForKey`). If the pool hands back any other account, P3 refuses.
-- **Statsig on every `/rest/` call**, reads included, failing closed. A send is signed (`SignImagine`) before any reference upload of that send: in `url` mode the signer is asked for exactly that request (its cache then serves the send), so a failing signer means zero uploads and zero sends. There is no replay, not even the upstream code-7 retry (sec-rowan N1).
+- **Statsig on every `/rest/` call**, reads included, failing closed. A send is signed (`SignImagine`) before any reference upload of that send: in `url` mode the signer is asked for exactly that request (its cache then serves the send), so a failing signer means zero uploads and zero sends. In `browser` mode `SignImagine` returns at once, with no token decrypt and no egress lease, unless the endpoint is in `statsigRequiredEndpoints`, where it fails closed. There is no replay, not even the upstream code-7 retry (sec-rowan N1).
 - **Statsig mode `browser` (P5b, the default)** sends what grok.com's own page sends: no `x-statsig-id` (none on any of the 20 `/rest/` and `/api/` calls recorded on 1 Nov 2026) and a fresh UUIDv4 `x-xai-request-id` per request (grok.com's JS uses `crypto.randomUUID()`). "Failing closed" above applies to `manual`, `url` and `local`. An endpoint later found to need a signature is added to `statsigRequiredEndpoints` in `web/statsig.go` (`"POST /rest/app-chat/conversations/{id}/responses"` form); in `browser` mode it then fails closed with `statsig_unavailable` and a readable reason, before any call.
 - **One send per job_id**, in the `cz_imagine_send_key` table. A create reserves it before choosing an account; an in-post send reserves it after the free re-read, just before the upload and send. A reserved id is never released, whatever the outcome.
 - **Every in-post send re-reads the post first** (free), so the parent `head` is the newest response.
+- **Unrecognised replies** (T5). On 1 Nov 2026 the first real in-post edit succeeded on grok.com, but P3 did not recognise the reply and answered `outcome_unknown`. When an in-post send gets a 200 stream P3 cannot read, or a recognised final with no asset, P3 now makes **one** free re-read of the post (`reread.go`), never a second send. It counts as a result only when exactly one new human item appears (not in the pre-send read, on the parent P3 sent, made no earlier than 2 minutes before the send), exactly one model item answers it, and nothing is in flight. With assets, that is a verified success, and the post-context check still runs. With no assets, it is `provider_refused`. Anything else stays `outcome_unknown`. Creates have no pre-send read to compare against, so they are not re-read.
+- **Reply key-structure capture** (`replyshape.go`, off by default). With `cz.imaginePost.debugReplyShapeFile` set, every send appends one JSON line to that file: the reply's key structure, with each value replaced by its type. It never records a value, prompt, URL or id, and a key that looks like an id becomes `<key>`. Use it for one real send, correct `wire_provisional.go` and `fakegrok/wire_provisional.go` from it, then turn it off.
+- **Import pins only what the account can read** (`import.go`, T6). `POST /posts/import` replaces a hand-written `cz_imagine_post_owner` row. A post already pinned for the key is returned unchanged with no call. A post pinned for another key answers `post_not_found`. Otherwise P3 tries the key's eligible accounts (the create candidates, pinned-only accounts included, since they serve the posts that live on them), in account-id order, or only the labelled one when `account_label` is given. Each try is one free `GET …/responses`. The first that succeeds gets the pin, which is written once, as on create. A 404 or 403 means "not on this account" (provisional: how grok.com answers another account's conversation is unconfirmed). A retryable failure (429, 5xx) is answered as it is, so a retry can still find the post. At most `MaxImportReads` (4) reads. The owner hash is filled on the first item read, as for a create whose read failed.
 - **Post-context check after every send**: every conversation id the stream names, and the new asset's `currentConversationId`, must be the post's.
 - **Logging and storage** (sec-rowan B5):
   - Logs carry the op, the code, the account label and an 8-hex keyed reference of the conversation id.
@@ -123,5 +128,8 @@ Rebase budget (F8): P3's hunks in upstream files total 19 changed lines, under t
 | F6 audit | `security_test.go` |
 | F7 like | `security_test.go`, `http/handler_test.go`, `config/cz_test.go` |
 | F8 | the command above, by hand on each upstream pull |
+| P4 account ranking, pinned-only, sign before upload, owner hash fill | `p4_test.go` |
+| T5 re-read and reply-shape capture | `t5_reply_test.go` |
+| T6 import | `t6_import_test.go` and `http/import_test.go` |
 
 Functional behaviour is in `service_test.go`; the fake itself in `fakegrok/fakegrok_test.go`.
