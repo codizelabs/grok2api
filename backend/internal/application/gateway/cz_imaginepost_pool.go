@@ -8,6 +8,8 @@ package gateway
 import (
 	"context"
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -86,4 +88,102 @@ func (s *Service) CZReportImagineStatus(ctx context.Context, credential account.
 	case http.StatusTooManyRequests:
 		s.selector.MarkFailure(ctx, credential, status, 0)
 	}
+}
+
+// CZImagineRoute is one model route a new post's account must serve.
+type CZImagineRoute struct {
+	UpstreamModel string
+	QuotaMode     string
+}
+
+// CZImagineCandidate is one account a new post may be pinned to, with the
+// quota grok2api already holds for it: one Remaining per route, -1 unknown.
+type CZImagineCandidate struct {
+	AccountID uint64
+	Remaining []int
+}
+
+// CZImagineNewCandidates lists the web accounts a new post may be pinned to
+// (ADR-0002 § 1): enabled, signed in, inside the key's scope, serving every
+// route's model, not cooling and not out of quota on any route, sorted by
+// account id. It reads only grok2api's own state: nothing is leased and
+// grok.com is never called. The caller ranks them and leases one with
+// CZAcquireImaginePinned, which checks the account again.
+func (s *Service) CZImagineNewCandidates(ctx context.Context, scope clientkeydomain.AccountScope, routes ...CZImagineRoute) ([]CZImagineCandidate, error) {
+	if len(routes) == 0 {
+		return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+	}
+	accountScope, scopeValid := clientkeydomain.NormalizeAccountScope(scope)
+	if !scopeValid || !accountScope.AllowsProvider(account.ProviderWeb) {
+		return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts, Scope: accountScope}
+	}
+	now := time.Now().UTC()
+	consumed := s.selector.quotaConsumptionSnapshot(account.ProviderWeb)
+	overrides := s.selector.routingHealthSnapshot(account.ProviderWeb, now)
+	eligible := map[uint64][]int{}
+	for index, route := range routes {
+		resolved, err := s.models.GetByProviderUpstream(ctx, account.ProviderWeb, route.UpstreamModel)
+		if err != nil {
+			return nil, err
+		}
+		values, err := s.selector.loadCandidates(ctx, account.ProviderWeb, resolved.ID, resolved.UpstreamModel, route.QuotaMode, now, false)
+		if err != nil {
+			return nil, err
+		}
+		seen := map[uint64]bool{}
+		for _, candidate := range values {
+			value := applyHealthSnapshot(candidate.Credential, overrides)
+			if !czImagineCandidateUsable(s.selector, route, accountScope, candidate, value, consumed, now) {
+				continue
+			}
+			if index == 0 {
+				eligible[value.ID] = make([]int, len(routes))
+			} else if _, ok := eligible[value.ID]; !ok {
+				continue
+			}
+			remaining := -1
+			if window := candidate.QuotaWindow; window != nil {
+				remaining = window.Remaining - consumed[accountQuotaConsumptionKey{accountID: value.ID, mode: window.Mode}]
+			}
+			eligible[value.ID][index] = remaining
+			seen[value.ID] = true
+		}
+		for id := range eligible {
+			if !seen[id] {
+				delete(eligible, id)
+			}
+		}
+	}
+	result := make([]CZImagineCandidate, 0, len(eligible))
+	for id, remaining := range eligible {
+		result = append(result, CZImagineCandidate{AccountID: id, Remaining: remaining})
+	}
+	sort.Slice(result, func(left, right int) bool { return result[left].AccountID < result[right].AccountID })
+	return result, nil
+}
+
+// czImagineCandidateUsable applies the same account checks as an inference
+// AcquirePinned, without leasing.
+func czImagineCandidateUsable(selector *Selector, route CZImagineRoute, scope clientkeydomain.AccountScope, candidate account.RoutingCandidate, value account.Credential, consumed map[accountQuotaConsumptionKey]int, now time.Time) bool {
+	switch {
+	case value.ID == 0 || !value.Enabled || value.AuthStatus != account.AuthStatusActive:
+		return false
+	case !accountScopeAllowsCandidate(account.ProviderWeb, scope, candidate):
+		return false
+	case !selector.candidateSupportsModel(account.ProviderWeb, route.UpstreamModel, route.QuotaMode, candidate):
+		return false
+	case candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil):
+		return false
+	case candidateEgressLeaseCooling(candidate, value, now):
+		return false
+	case value.CooldownUntil != nil && now.Before(*value.CooldownUntil):
+		return false
+	case candidate.QuotaRecovery != nil && candidate.QuotaRecovery.Status != account.QuotaRecoveryStatusActive:
+		return false
+	case candidate.Billing != nil && candidate.Billing.IsExhausted(value.MinimumRemaining):
+		return false
+	case quotaWindowExhausted(candidate, consumed):
+		return false
+	}
+	return true
 }

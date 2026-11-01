@@ -66,14 +66,20 @@ func (p GatewayPool) AcquirePinned(ctx context.Context, accountID uint64, purpos
 	return gatewayLease{lease: lease}, nil
 }
 
-// AcquireNew picks an account for a new post.
-func (p GatewayPool) AcquireNew(ctx context.Context, purpose Purpose, scope clientkeydomain.AccountScope, excluded map[uint64]bool) (Lease, error) {
-	model, quotaMode := purposeRoute(purpose)
-	lease, err := p.Service.CZAcquireImagineNew(ctx, model, quotaMode, scope, excluded)
+// NewPostCandidates lists the accounts a new post may be pinned to, with the
+// image-edit and 720p video quota grok2api holds for each (no grok.com call).
+func (p GatewayPool) NewPostCandidates(ctx context.Context, scope clientkeydomain.AccountScope) ([]Candidate, error) {
+	values, err := p.Service.CZImagineNewCandidates(ctx, scope,
+		gateway.CZImagineRoute{UpstreamModel: imageEditModel, QuotaMode: account.QuotaModeWebImageEdit},
+		gateway.CZImagineRoute{UpstreamModel: videoModel, QuotaMode: account.QuotaModeWebVideo720p})
 	if err != nil {
 		return nil, refusal(err)
 	}
-	return gatewayLease{lease: lease}, nil
+	candidates := make([]Candidate, 0, len(values))
+	for _, value := range values {
+		candidates = append(candidates, Candidate{AccountID: value.AccountID, ImageEditRemaining: value.Remaining[0], Video720pRemaining: value.Remaining[1]})
+	}
+	return candidates, nil
 }
 
 // Report feeds a 401 or 429 into the account's health.

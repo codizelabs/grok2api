@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,9 @@ import (
 type Transport interface {
 	DoImagine(ctx context.Context, credential account.Credential, method, path string, body []byte) (*http.Response, error)
 	UploadImagine(ctx context.Context, credential account.Credential, filename, mimeType string, data []byte) (string, error)
+	// SignImagine obtains the Statsig signature for the send at method+path
+	// before any upload of that send (fails closed).
+	SignImagine(ctx context.Context, credential account.Credential, method, path string) error
 	FetchImagineAsset(ctx context.Context, credential account.Credential, key string) (io.ReadCloser, string, error)
 }
 
@@ -50,10 +54,19 @@ type Lease interface {
 	Release()
 }
 
+// Candidate is one account a new post may be pinned to, with the quota
+// grok2api already holds for it (-1 means unknown).
+type Candidate struct {
+	AccountID          uint64
+	ImageEditRemaining int
+	Video720pRemaining int
+}
+
 // Pool leases accounts. AcquirePinned must return only accountID or an error.
+// NewPostCandidates lists accounts without leasing or calling grok.com.
 type Pool interface {
 	AcquirePinned(ctx context.Context, accountID uint64, purpose Purpose, scope clientkeydomain.AccountScope) (Lease, error)
-	AcquireNew(ctx context.Context, purpose Purpose, scope clientkeydomain.AccountScope, excluded map[uint64]bool) (Lease, error)
+	NewPostCandidates(ctx context.Context, scope clientkeydomain.AccountScope) ([]Candidate, error)
 	Report(ctx context.Context, credential account.Credential, status int)
 }
 
@@ -61,6 +74,9 @@ type Pool interface {
 type Config struct {
 	// AllowLike opens like/unlike on the allow-list. Off by default (§ 6 Q4).
 	AllowLike bool
+	// PinnedOnlyAccountIDs serve only posts already pinned to them and are
+	// never chosen for a new post (ADR-0002 § 1).
+	PinnedOnlyAccountIDs []uint64
 	// MaxImageBytes caps one uploaded reference.
 	MaxImageBytes int
 	// SendTimeout bounds one send's stream.
@@ -255,18 +271,17 @@ func (s *Service) CreatePost(ctx context.Context, caller Caller, input CreateInp
 	defer func() {
 		_ = s.store.FinishJob(context.WithoutCancel(ctx), caller.ClientKeyID, input.JobID, state, postRef)
 	}()
-	lease, chooseErr := s.chooseNewAccount(ctx, caller)
+	lease, release, chooseErr := s.chooseNewAccount(ctx, caller)
 	if chooseErr != nil {
 		return nil, s.logged("create", "", 0, chooseErr)
 	}
 	defer lease.Release()
-	credential := lease.Credential()
-	release, busyErr := s.claimAccount(credential.ID)
-	if busyErr != nil {
-		return nil, s.logged("create", "", credential.ID, busyErr)
-	}
 	defer release()
+	credential := lease.Credential()
 
+	if signErr := s.signSend(ctx, credential, pathCreate); signErr != nil {
+		return nil, s.logged("create", "", credential.ID, signErr)
+	}
 	fileID, uploadErr := s.upload(ctx, credential, *input.Image)
 	if uploadErr != nil {
 		return nil, s.logged("create", "", credential.ID, uploadErr)
@@ -312,34 +327,102 @@ func (s *Service) CreatePost(ctx context.Context, caller Caller, input CreateInp
 	return result, nil
 }
 
-// maxNewAccountTries bounds how many accounts a create's free quota reads try.
+// maxNewAccountTries bounds how many free quota reads one create makes.
 const maxNewAccountTries = 4
 
-// chooseNewAccount picks the account a new post is pinned to: one the pool
-// offers inside the key's scope whose free quota read confirms 15 s at 720p
-// (ADR-0002 § 1), so every later video in the post can be made on it.
-func (s *Service) chooseNewAccount(ctx context.Context, caller Caller) (Lease, *Error) {
-	excluded := map[uint64]bool{}
-	for try := 0; try < maxNewAccountTries; try++ {
-		lease, err := s.pool.AcquireNew(ctx, PurposeImage, caller.Scope, excluded)
-		if err != nil {
-			if try > 0 {
-				break
-			}
-			return nil, mapAcquireErr(err, CodeNoAccount)
+// rankCandidates orders the accounts a new post may go to (ADR-0002 § 1):
+// fewest pinned posts, then most remaining image-edit quota, then most
+// remaining 720p video quota (unknown, -1, after any known value), then the
+// lowest account id. The order is deterministic.
+func rankCandidates(candidates []Candidate, openPosts map[uint64]int) {
+	sort.SliceStable(candidates, func(left, right int) bool {
+		a, b := candidates[left], candidates[right]
+		if openPosts[a.AccountID] != openPosts[b.AccountID] {
+			return openPosts[a.AccountID] < openPosts[b.AccountID]
 		}
-		credential := lease.Credential()
-		quota, quotaErr := s.quota(ctx, credential, "")
+		if a.ImageEditRemaining != b.ImageEditRemaining {
+			return a.ImageEditRemaining > b.ImageEditRemaining
+		}
+		if a.Video720pRemaining != b.Video720pRemaining {
+			return a.Video720pRemaining > b.Video720pRemaining
+		}
+		return a.AccountID < b.AccountID
+	})
+}
+
+// chooseNewAccount picks the account a new post is pinned to: the best
+// ranked candidate inside the key's scope that isn't pinned-only, has no send
+// in flight, is leased by the pool (not cooling, not out of quota) and whose
+// free quota read confirms 15 s at 720p, so every later video in the post can
+// be made on it. A busy or refused account is skipped for the next. It returns
+// the lease and the account's busy claim; the caller releases both.
+func (s *Service) chooseNewAccount(ctx context.Context, caller Caller) (Lease, func(), *Error) {
+	candidates, err := s.pool.NewPostCandidates(ctx, caller.Scope)
+	if err != nil {
+		return nil, nil, mapAcquireErr(err, CodeNoAccount)
+	}
+	openPosts, err := s.store.OpenPostsByAccount(ctx)
+	if err != nil {
+		return nil, nil, notSent(CodeInternal, http.StatusInternalServerError)
+	}
+	pinnedOnly := map[uint64]bool{}
+	for _, id := range s.cfg().PinnedOnlyAccountIDs {
+		pinnedOnly[id] = true
+	}
+	eligible := candidates[:0:0]
+	for _, candidate := range candidates {
+		if candidate.AccountID != 0 && !pinnedOnly[candidate.AccountID] {
+			eligible = append(eligible, candidate)
+		}
+	}
+	rankCandidates(eligible, openPosts)
+
+	busySkips, otherSkips, tries := 0, 0, 0
+	var refused *Error
+	for _, candidate := range eligible {
+		if tries >= maxNewAccountTries {
+			break
+		}
+		release, busyErr := s.claimAccount(candidate.AccountID)
+		if busyErr != nil {
+			busySkips++
+			continue
+		}
+		lease, acquireErr := s.pool.AcquirePinned(ctx, candidate.AccountID, PurposeImage, caller.Scope)
+		if acquireErr != nil {
+			release()
+			otherSkips++
+			if mapped := mapAcquireErr(acquireErr, CodeNoAccount); refused == nil || mapped.Status == http.StatusTooManyRequests {
+				refused = mapped
+			}
+			continue
+		}
+		if lease.Credential().ID != candidate.AccountID {
+			// The pool broke its contract; never pin a post to another account.
+			lease.Release()
+			release()
+			otherSkips++
+			continue
+		}
+		tries++
+		quota, quotaErr := s.quota(ctx, lease.Credential(), "")
 		if quotaErr == nil && quota.MaxVideoSeconds >= videoDurationSeconds && quota.Video720p {
-			return lease, nil
+			return lease, release, nil
 		}
 		lease.Release()
+		release()
 		if quotaErr != nil && quotaErr.Code == CodeStatsigUnavailable {
-			return nil, quotaErr
+			return nil, nil, quotaErr
 		}
-		excluded[credential.ID] = true
+		otherSkips++
 	}
-	return nil, notSent(CodeNoAccount, http.StatusServiceUnavailable)
+	if busySkips > 0 && otherSkips == 0 && tries == 0 {
+		return nil, nil, errAccountBusy()
+	}
+	if refused != nil && tries == 0 {
+		return nil, nil, refused
+	}
+	return nil, nil, notSent(CodeNoAccount, http.StatusServiceUnavailable)
 }
 
 // resolvePost checks the caller's pin and label before anything leaves P3.
@@ -495,6 +578,17 @@ func (s *Service) sendInPost(ctx context.Context, caller Caller, conversationID,
 	state := string(NotSent)
 	defer func() { _ = s.store.FinishJob(context.WithoutCancel(ctx), caller.ClientKeyID, jobID, state, postRef) }()
 
+	// The send's signature comes before any reference upload (fails closed).
+	if signErr := s.signSend(ctx, credential, addResponsePath(conversationID)); signErr != nil {
+		return nil, s.logged(op, conversationID, credential.ID, signErr)
+	}
+	if owner.OwnerUserHash == "" {
+		// The read right after create failed: learn the creator from the
+		// source item (made before this send) so the tripwire below works.
+		if record, err := s.readAsset(ctx, credential, conversationID, sourceAssetID); err == nil && record.conversation() == conversationID {
+			owner.OwnerUserHash = s.fillOwnerHash(ctx, conversationID, record.OwnerUserID)
+		}
+	}
 	body, buildErr := build(ctx, credential, snapshot, parent)
 	if buildErr != nil {
 		return nil, s.logged(op, conversationID, credential.ID, buildErr)
@@ -638,6 +732,9 @@ func (s *Service) itemOnPinned(ctx context.Context, caller Caller, conversationI
 	}
 	if validID.MatchString(record.ResponseID) {
 		facts.ResponseID = record.ResponseID
+	}
+	if owner.OwnerUserHash == "" {
+		owner.OwnerUserHash = s.fillOwnerHash(ctx, conversationID, record.OwnerUserID)
 	}
 	if owner.OwnerUserHash != "" && record.OwnerUserID != "" {
 		owned := s.labels.UserHash(record.OwnerUserID) == owner.OwnerUserHash
@@ -801,6 +898,37 @@ func (s *Service) read(ctx context.Context, credential account.Credential, op, c
 	return data, nil
 }
 
+// signSend obtains the Statsig signature for the send at path before any
+// reference upload of that send, so nothing of a send leaves unsigned (url
+// mode asks the signer for exactly this request; manual mode checks the
+// value). It fails closed: on any error nothing of the send goes out.
+// The send itself is still checked against the allow-list, body included,
+// right before it goes out; signing calls only the signer, never grok.com's
+// API.
+func (s *Service) signSend(ctx context.Context, credential account.Credential, path string) *Error {
+	ctx, cancel := context.WithTimeout(ctx, s.cfg().ReadTimeout)
+	defer cancel()
+	if err := s.transport.SignImagine(ctx, credential, http.MethodPost, path); err != nil {
+		return mapTransportErr(err, false)
+	}
+	return nil
+}
+
+// fillOwnerHash stores the keyed hash of a post's creator when the read
+// right after create failed and left the pin without one, so the
+// account_mismatch tripwire works from the first successful read on. It
+// returns the hash ("" when userID is empty).
+func (s *Service) fillOwnerHash(ctx context.Context, conversationID, userID string) string {
+	hash := s.labels.UserHash(userID)
+	if hash == "" {
+		return ""
+	}
+	if err := s.store.FillOwnerUserHash(context.WithoutCancel(ctx), conversationID, hash); err != nil {
+		s.logger.Warn("cz_imagine_owner_hash_fill_failed", "post", s.labels.Ref(conversationID))
+	}
+	return hash
+}
+
 // upload sends one reference image (part of a send, never makePublic).
 func (s *Service) upload(ctx context.Context, credential account.Credential, image Image) (string, *Error) {
 	if err := CheckCall(s.policy(), Call{Method: http.MethodPost, Path: pathUpload}); err != nil {
@@ -906,12 +1034,16 @@ func mapAcquireErr(err error, code string) *Error {
 	return mapped
 }
 
+func errAccountBusy() *Error {
+	return &Error{Code: CodeAccountBusy, Status: http.StatusTooManyRequests, Send: NotSent, RetryAfter: 5 * time.Second}
+}
+
 // claimAccount allows one in-flight send per account (ADR-0002 § 6 Q1).
 func (s *Service) claimAccount(accountID uint64) (func(), *Error) {
 	s.busyMu.Lock()
 	defer s.busyMu.Unlock()
 	if s.busy[accountID] {
-		return nil, &Error{Code: CodeAccountBusy, Status: http.StatusTooManyRequests, Send: NotSent, RetryAfter: 5 * time.Second}
+		return nil, errAccountBusy()
 	}
 	s.busy[accountID] = true
 	return func() {

@@ -22,3 +22,20 @@ func TestCZImaginePostAllowLikeDefaultsOff(t *testing.T) {
 		t.Fatal("allowLike: true was not read")
 	}
 }
+
+// ADR-0002 § 1: no account is pinned-only by default; the list is read from
+// cz.imaginePost.pinnedOnlyAccountIds.
+func TestCZImaginePostPinnedOnlyAccountIDs(t *testing.T) {
+	if ids := defaultConfig().CZ.ImaginePost.PinnedOnlyAccountIDs; len(ids) != 0 {
+		t.Fatalf("pinnedOnlyAccountIds defaults to %v, want empty", ids)
+	}
+	cfg := defaultConfig()
+	decoder := yaml.NewDecoder(bytes.NewReader([]byte("cz:\n  imaginePost:\n    pinnedOnlyAccountIds: [7, 9]\n")))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
+		t.Fatalf("strict decode of the cz section: %v", err)
+	}
+	if ids := cfg.CZ.ImaginePost.PinnedOnlyAccountIDs; len(ids) != 2 || ids[0] != 7 || ids[1] != 9 {
+		t.Fatalf("pinnedOnlyAccountIds = %v, want [7 9]", ids)
+	}
+}

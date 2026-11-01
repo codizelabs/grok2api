@@ -30,7 +30,10 @@ func newCZImaginePost(ctx context.Context, cfg config.Config, database *relation
 }
 
 func czImaginePostConfig(cfg config.Config) imaginepost.Config {
-	return imaginepost.Config{AllowLike: cfg.CZ.ImaginePost.AllowLike}
+	return imaginepost.Config{
+		AllowLike:            cfg.CZ.ImaginePost.AllowLike,
+		PinnedOnlyAccountIDs: append([]uint64(nil), cfg.CZ.ImaginePost.PinnedOnlyAccountIDs...),
+	}
 }
 
 func updateCZImaginePost(service *imaginepost.Service, next config.Config) {

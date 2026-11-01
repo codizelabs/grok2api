@@ -195,6 +195,40 @@ func (a *Adapter) czImagineRejection(response *http.Response, lease interface {
 	return &ImagineHTTPError{Status: response.StatusCode, BodyBytes: upstreamErr.bodyBytes, BodyPrefixSHA256: upstreamErr.bodyPrefixSHA256}
 }
 
+// SignImagine obtains the Statsig signature for the send at method+path
+// before anything else of that send goes out, so a reference upload never
+// leaves without its send's signature. Manual mode only checks the value; url
+// mode asks the signer for exactly this request and its cache serves the
+// DoImagine that follows. It fails closed with provider.ErrStatsigUnavailable
+// and makes only the calls DoImagine's own signing would make (the signer and
+// its metaContent fetch), never an API call.
+func (a *Adapter) SignImagine(ctx context.Context, credential account.Credential, method, path string) error {
+	if method != http.MethodPost || !czImaginePathAllowed(method, path) {
+		return ErrImagineCallRefused
+	}
+	cfg := a.config()
+	if err := statsigConfigUsable(cfg); err != nil {
+		return err
+	}
+	if cfg.StatsigMode == "manual" {
+		return nil
+	}
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		return err
+	}
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
+	request, err := http.NewRequestWithContext(ctx, method, cfg.BaseURL+path, http.NoBody)
+	if err != nil {
+		return err
+	}
+	return a.czApplySignedStatsig(ctx, request, token, lease, path)
+}
+
 // UploadImagine uploads one reference image through /http/upload-file-v2/direct
 // (never makePublic) and returns its file metadata id.
 func (a *Adapter) UploadImagine(ctx context.Context, credential account.Credential, filename, mimeType string, data []byte) (string, error) {

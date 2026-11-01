@@ -10,8 +10,8 @@ import (
 )
 
 // PostOwner pins a post (grok.com conversation) to the account that created
-// it and the client key that asked (ADR-0002 § 1). The row never changes
-// after insert. OwnerUserHash is a keyed hash of the account's grok.com user
+// it and the client key that asked (ADR-0002 § 1). The pin never changes
+// after insert; only an empty OwnerUserHash is filled, once. OwnerUserHash is a keyed hash of the account's grok.com user
 // id (sec-rowan N3), never the raw id.
 type PostOwner struct {
 	ConversationID string `gorm:"primaryKey;size:128"`
@@ -96,6 +96,34 @@ func (s *Store) OwnersForKey(ctx context.Context, clientKeyID uint64) ([]PostOwn
 func (s *Store) PutOwner(ctx context.Context, owner PostOwner) error {
 	owner.CreatedAt = time.Now().UTC()
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&owner).Error
+}
+
+// OpenPostsByAccount counts the posts pinned to each account (every pin is
+// open: a post is never closed).
+func (s *Store) OpenPostsByAccount(ctx context.Context) (map[uint64]int, error) {
+	var rows []struct {
+		AccountID uint64
+		Posts     int
+	}
+	if err := s.db.WithContext(ctx).Model(&PostOwner{}).Select("account_id, count(*) as posts").Group("account_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	counts := make(map[uint64]int, len(rows))
+	for _, row := range rows {
+		counts[row.AccountID] = row.Posts
+	}
+	return counts, nil
+}
+
+// FillOwnerUserHash sets a pin's owner hash when the read right after create
+// failed and left it empty. A hash once set is never overwritten.
+func (s *Store) FillOwnerUserHash(ctx context.Context, conversationID, hash string) error {
+	if hash == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).Model(&PostOwner{}).
+		Where("conversation_id = ? AND (owner_user_hash = '' OR owner_user_hash IS NULL)", conversationID).
+		Update("owner_user_hash", hash).Error
 }
 
 // ReserveJob claims a job_id. It reports false when the id was already used.

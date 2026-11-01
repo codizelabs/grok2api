@@ -321,8 +321,14 @@ func TestReadItemAndMedia(t *testing.T) {
 }
 
 func TestOneSendPerAccountAtATime(t *testing.T) {
+	// A new post skips a busy account for the next one (ADR-0002 § 1), so
+	// account_busy needs every account busy.
 	h := newDefaultHarness(t)
 	release, err := h.service.claimAccount(accountA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseB, err := h.service.claimAccount(accountB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,6 +337,7 @@ func TestOneSendPerAccountAtATime(t *testing.T) {
 		t.Fatalf("busy account: %v", sendErr)
 	}
 	release()
+	releaseB()
 	h.createPost("job-after")
 }
 

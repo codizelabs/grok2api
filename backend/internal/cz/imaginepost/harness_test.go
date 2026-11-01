@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,8 +37,10 @@ import (
 const (
 	accountA uint64 = 11
 	accountB uint64 = 22
+	accountC uint64 = 33
 	ssoA            = "acct-a"
 	ssoB            = "acct-b"
+	ssoC            = "acct-c"
 	keyID    uint64 = 5
 )
 
@@ -66,6 +70,37 @@ type fakePool struct {
 	newAccount  uint64           // AcquireNew's pick; 0 refuses
 	acquired    []uint64         // every account a lease was granted on
 	reports     []int
+	// candidates is NewPostCandidates' answer; nil means every credential,
+	// sorted by id, with unknown (-1) remaining counts.
+	candidates     []Candidate
+	candidateCalls int
+}
+
+// NewPostCandidates returns the scripted candidates (see fakePool.candidates).
+func (p *fakePool) NewPostCandidates(_ context.Context, _ clientkeydomain.AccountScope) ([]Candidate, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.candidateCalls++
+	if p.candidates != nil {
+		return append([]Candidate(nil), p.candidates...), nil
+	}
+	ids := make([]uint64, 0, len(p.credentials))
+	for id := range p.credentials {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	out := make([]Candidate, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, Candidate{AccountID: id, ImageEditRemaining: -1, Video720pRemaining: -1})
+	}
+	return out, nil
+}
+
+// setCandidates scripts NewPostCandidates; no arguments means none.
+func (p *fakePool) setCandidates(candidates ...Candidate) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.candidates = append([]Candidate{}, candidates...)
 }
 
 type poolLease struct {
@@ -139,6 +174,42 @@ type recordingTransport struct {
 	fake  *fakegrok.Server
 	mu    sync.Mutex
 	calls []string // "METHOD path" per DoImagine, "UPLOAD", "MEDIA key"
+	// signErr, when set, fails every SignImagine without reaching inner.
+	signErr error
+	// signs records every SignImagine as "METHOD path".
+	signs []string
+	// failNextAssetRead, when set, fails the next GET /rest/assets/ once.
+	failNextAssetRead error
+}
+
+func (r *recordingTransport) SignImagine(ctx context.Context, credential account.Credential, method, path string) error {
+	r.mu.Lock()
+	r.signs = append(r.signs, method+" "+path)
+	failure := r.signErr
+	r.mu.Unlock()
+	if failure != nil {
+		return failure
+	}
+	return r.inner.SignImagine(ctx, credential, method, path)
+}
+
+func (r *recordingTransport) setSignErr(err error) {
+	r.mu.Lock()
+	r.signErr = err
+	r.mu.Unlock()
+}
+
+// Signs lists every SignImagine call as "METHOD path".
+func (r *recordingTransport) Signs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.signs...)
+}
+
+func (r *recordingTransport) failNextAssetReadWith(err error) {
+	r.mu.Lock()
+	r.failNextAssetRead = err
+	r.mu.Unlock()
 }
 
 func (r *recordingTransport) note(entry string) {
@@ -155,6 +226,15 @@ func (r *recordingTransport) Calls() []string {
 
 func (r *recordingTransport) DoImagine(ctx context.Context, credential account.Credential, method, path string, body []byte) (*http.Response, error) {
 	r.note(method + " " + path)
+	if method == http.MethodGet && strings.HasPrefix(path, "/rest/assets/") {
+		r.mu.Lock()
+		failure := r.failNextAssetRead
+		r.failNextAssetRead = nil
+		r.mu.Unlock()
+		if failure != nil {
+			return nil, failure
+		}
+	}
 	return r.inner.DoImagine(ctx, credential, method, path, body)
 }
 
@@ -167,8 +247,11 @@ func (r *recordingTransport) UploadImagine(ctx context.Context, credential accou
 func (r *recordingTransport) FetchImagineAsset(ctx context.Context, credential account.Credential, key string) (io.ReadCloser, string, error) {
 	r.note("MEDIA " + key)
 	sso := ssoA
-	if credential.ID == accountB {
+	switch credential.ID {
+	case accountB:
 		sso = ssoB
+	case accountC:
+		sso = ssoC
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.fake.URL+"/"+key, nil)
 	if err != nil {
@@ -196,6 +279,17 @@ type harness struct {
 	logs      *bytes.Buffer
 	db        *gorm.DB
 	caller    Caller
+	encrypt   func(string) string
+}
+
+// addAccountC adds a third pool account (id 33, sso "acct-c"). It is opt-in
+// so the two-account tests keep their meaning.
+func (h *harness) addAccountC() {
+	h.t.Helper()
+	credential := account.Credential{ID: accountC, Provider: account.ProviderWeb, WebTier: account.WebTierAuto, EncryptedAccessToken: h.encrypt(ssoC)}
+	h.pool.mu.Lock()
+	defer h.pool.mu.Unlock()
+	h.pool.credentials[accountC] = credential
 }
 
 type syncBuffer struct {
@@ -211,6 +305,13 @@ func (b *syncBuffer) Write(p []byte) (int, error) {
 
 func newHarness(t *testing.T, statsig string, config Config) *harness {
 	t.Helper()
+	return newHarnessWithWeb(t, web.Config{StatsigMode: "manual", StatsigManualValue: statsig}, config)
+}
+
+// newHarnessWithWeb is newHarness with the web adapter's Statsig settings
+// given (BaseURL is always the fake's).
+func newHarnessWithWeb(t *testing.T, webConfig web.Config, config Config) *harness {
+	t.Helper()
 	ctx := context.Background()
 	fake := fakegrok.New(filepath.Join(t.TempDir(), "fake-calls.txt"))
 	t.Cleanup(fake.Close)
@@ -225,7 +326,8 @@ func newHarness(t *testing.T, statsig string, config Config) *harness {
 		}
 		return encrypted
 	}
-	adapter := web.NewAdapter(web.Config{BaseURL: fake.URL, StatsigMode: "manual", StatsigManualValue: statsig}, infraegress.NewManager(noEgress{}, cipher), cipher, nil, nil)
+	webConfig.BaseURL = fake.URL
+	adapter := web.NewAdapter(webConfig, infraegress.NewManager(noEgress{}, cipher), cipher, nil, nil)
 	pool := &fakePool{
 		credentials: map[uint64]account.Credential{
 			accountA: {ID: accountA, Provider: account.ProviderWeb, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypt(ssoA)},
@@ -248,7 +350,7 @@ func newHarness(t *testing.T, statsig string, config Config) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &harness{t: t, ctx: ctx, fake: fake, pool: pool, transport: transport, service: service, logs: logs, db: db, caller: Caller{ClientKeyID: keyID}}
+	return &harness{t: t, ctx: ctx, fake: fake, pool: pool, transport: transport, service: service, logs: logs, db: db, caller: Caller{ClientKeyID: keyID}, encrypt: encrypt}
 }
 
 func newDefaultHarness(t *testing.T) *harness { return newHarness(t, validStatsig, Config{}) }

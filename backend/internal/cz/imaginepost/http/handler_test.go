@@ -32,6 +32,10 @@ func (c *countingTransport) UploadImagine(context.Context, account.Credential, s
 	c.calls++
 	return "", errors.New("no network in handler tests")
 }
+func (c *countingTransport) SignImagine(context.Context, account.Credential, string, string) error {
+	c.calls++
+	return errors.New("no network in handler tests")
+}
 func (c *countingTransport) FetchImagineAsset(context.Context, account.Credential, string) (io.ReadCloser, string, error) {
 	c.calls++
 	return nil, "", errors.New("no network in handler tests")
@@ -42,7 +46,7 @@ type refusingPool struct{}
 func (refusingPool) AcquirePinned(context.Context, uint64, imaginepost.Purpose, clientkeydomain.AccountScope) (imaginepost.Lease, error) {
 	return nil, errors.New("refused")
 }
-func (refusingPool) AcquireNew(context.Context, imaginepost.Purpose, clientkeydomain.AccountScope, map[uint64]bool) (imaginepost.Lease, error) {
+func (refusingPool) NewPostCandidates(context.Context, clientkeydomain.AccountScope) ([]imaginepost.Candidate, error) {
 	return nil, errors.New("refused")
 }
 func (refusingPool) Report(context.Context, account.Credential, int) {}
