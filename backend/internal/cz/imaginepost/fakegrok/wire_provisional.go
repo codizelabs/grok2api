@@ -124,3 +124,18 @@ func missingKeys(body map[string]any, op string) error {
 	}
 	return nil
 }
+
+// unrecognisedReplyLines stands in for the real add-response reply that P3's
+// parser didn't recognise on 1 Nov 2026 (the first real in-post edit:
+// grok.com made the image, P3 answered outcome_unknown). These lines are
+// INVENTED, not recorded: they only have to carry nothing the parser reads
+// (no conversation, response, modelResponse or streaming frame), so the
+// service falls back to its one free re-read. Replace them with the shape the
+// debug capture (Config.DebugReplyShapeFile) records on the next real send.
+func unrecognisedReplyLines() [][]byte {
+	return [][]byte{
+		streamLine(map[string]any{"result": map[string]any{"event": map[string]any{"type": "imagine_progress", "progress": 50}}}),
+		streamLine(map[string]any{"result": map[string]any{"event": map[string]any{"type": "imagine_progress", "progress": 100}}}),
+		streamLine(map[string]any{"result": map[string]any{"event": map[string]any{"type": "imagine_done"}}}),
+	}
+}

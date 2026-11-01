@@ -39,3 +39,20 @@ func TestCZImaginePostPinnedOnlyAccountIDs(t *testing.T) {
 		t.Fatalf("pinnedOnlyAccountIds = %v, want [7 9]", ids)
 	}
 }
+
+// WP08a-T5: the reply-shape debug capture is off unless
+// cz.imaginePost.debugReplyShapeFile names a file.
+func TestCZImaginePostDebugReplyShapeFileDefaultsOff(t *testing.T) {
+	if file := defaultConfig().CZ.ImaginePost.DebugReplyShapeFile; file != "" {
+		t.Fatalf("debugReplyShapeFile defaults to %q, want empty (off)", file)
+	}
+	cfg := defaultConfig()
+	decoder := yaml.NewDecoder(bytes.NewReader([]byte("cz:\n  imaginePost:\n    debugReplyShapeFile: /data/cz-reply-shapes.jsonl\n")))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
+		t.Fatalf("strict decode of the cz section: %v", err)
+	}
+	if file := cfg.CZ.ImaginePost.DebugReplyShapeFile; file != "/data/cz-reply-shapes.jsonl" {
+		t.Fatalf("debugReplyShapeFile = %q, want /data/cz-reply-shapes.jsonl", file)
+	}
+}

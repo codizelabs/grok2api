@@ -88,9 +88,23 @@ const (
 	// FaultOtherConversation ends the next send's stream in another conversation.
 	FaultOtherConversation Fault = "other_conversation"
 	// FaultDropAfterStart drops the next send's stream after its first line.
+	// For an in-post send the post then holds only the new human item: Grok
+	// never finished the model item.
 	FaultDropAfterStart Fault = "drop_after_start"
 	// FaultModerated ends the next send's stream with a streamError.
 	FaultModerated Fault = "moderated"
+	// FaultUnrecognisedReply makes the next in-post send succeed (the post
+	// gains the human item and a model item with the result asset) while its
+	// reply is in a shape P3's parser doesn't read (unrecognisedReplyLines),
+	// as on the first real in-post edit (1 Nov 2026).
+	FaultUnrecognisedReply Fault = "unrecognised_reply"
+	// FaultRefusedUnrecognised is FaultUnrecognisedReply where Grok refused:
+	// the post gains the human item and a model item with no asset.
+	FaultRefusedUnrecognised Fault = "refused_unrecognised"
+	// FaultUnrecognisedNoResult answers the next in-post send in the
+	// unrecognised shape and adds only the human item to the post (no model
+	// item ever appears).
+	FaultUnrecognisedNoResult Fault = "unrecognised_no_result"
 )
 
 // Server is the fake grok.com.
@@ -495,21 +509,34 @@ func (s *Server) serveAddResponse(writer http.ResponseWriter, call Call, convers
 	if op == "video" {
 		mimeType, key = "video/mp4", "users/u/generated/"+result+"/generated_video.mp4"
 	}
-	s.assets[result] = &asset{ID: result, Owner: call.Account, ConversationID: resultConversation, ResponseID: model, MIME: mimeType, Width: 720, Height: 1280, Key: key}
+	// A refused send makes no asset; a dropped or unfinished one adds only
+	// the human item (Grok never finished the model item).
+	withAsset := fault != FaultRefusedUnrecognised
+	withModel := fault != FaultDropAfterStart && fault != FaultUnrecognisedNoResult
+	resultAssets := []string{}
+	if withAsset && withModel {
+		s.assets[result] = &asset{ID: result, Owner: call.Account, ConversationID: resultConversation, ResponseID: model, MIME: mimeType, Width: 720, Height: 1280, Key: key}
+		resultAssets = []string{result}
+	}
 	now := time.Now().UTC()
 	message, _ := body["message"].(string)
 	target := s.conversations[resultConversation]
 	target.Responses = append(target.Responses,
-		response{ResponseID: human, ParentResponseID: parent, Sender: "human", Message: message, AssetIDs: inputAssetsOf(body), CreateTime: now},
-		response{ResponseID: model, ParentResponseID: human, Sender: "assistant", Message: message, AssetIDs: []string{result}, Model: modelName, CreateTime: now.Add(time.Second)},
-	)
+		response{ResponseID: human, ParentResponseID: parent, Sender: "human", Message: message, AssetIDs: inputAssetsOf(body), CreateTime: now})
+	if withModel {
+		target.Responses = append(target.Responses,
+			response{ResponseID: model, ParentResponseID: human, Sender: "assistant", Message: message, AssetIDs: resultAssets, Model: modelName, CreateTime: now.Add(time.Second)})
+	}
 	streamText := s.streamError
 	s.mu.Unlock()
 	url := "https://assets.grok.com/" + key
 	var lines [][]byte
-	if op == "video" {
+	switch {
+	case fault == FaultUnrecognisedReply || fault == FaultRefusedUnrecognised || fault == FaultUnrecognisedNoResult:
+		lines = unrecognisedReplyLines()
+	case op == "video":
 		lines = addResponseVideoLines(resultConversation, human, model, result, url)
-	} else {
+	default:
 		lines = addResponseImageLines(resultConversation, human, model, result, url)
 	}
 	dropAfter := 0
