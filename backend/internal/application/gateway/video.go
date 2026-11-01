@@ -630,6 +630,17 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 		if pinnedAccountID > 0 && !excluded[pinnedAccountID] {
 			lease, err = s.selector.AcquirePinned(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
+			if err != nil && attempt == 0 {
+				// CZ P3 (ADR-0002 § 1): the account recorded on the job is never
+				// swapped for another one; an unavailable pinned account ends the
+				// job before any send.
+				if parent.Err() != nil {
+					s.stopVideoJobOnShutdown(parent, job, sendStarted, failureAttempts.snapshot())
+					return
+				}
+				s.failVideoJob(parent, job, "upstream_pinned_account_unavailable", err, 0, failureAttempts.snapshot())
+				return
+			}
 			if err != nil {
 				excluded[pinnedAccountID] = true
 				lease = nil
