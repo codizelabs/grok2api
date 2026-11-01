@@ -2399,8 +2399,9 @@ const storedLanguage = readStoredLanguage();
 
 void i18n.use(initReactI18next).init({
   resources,
-  lng: storedLanguage === "en" ? "en" : "zh-CN",
-  fallbackLng: "zh-CN",
+  // CodizeLabs: English by default; Chinese only when it was chosen in the language menu.
+  lng: storedLanguage === "zh-CN" ? "zh-CN" : "en",
+  fallbackLng: "en",
   interpolation: { escapeValue: false },
 });
 
