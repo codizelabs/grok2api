@@ -448,7 +448,7 @@ func testMediaAdapter(t *testing.T, baseURL string) (*Adapter, account.Credentia
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewAdapter(Config{BaseURL: baseURL, StatsigMode: "manual", ChatTimeoutSeconds: 5, ImageTimeoutSeconds: 5, MaxInputImageBytes: 1 << 20}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, imageAssetStoreStub{})
+	adapter := NewAdapter(Config{BaseURL: baseURL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID, ChatTimeoutSeconds: 5, ImageTimeoutSeconds: 5, MaxInputImageBytes: 1 << 20}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, imageAssetStoreStub{})
 	credential := account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encrypted}
 	return adapter, credential
 }

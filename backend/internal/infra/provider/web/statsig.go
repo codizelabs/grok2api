@@ -17,17 +17,17 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/pkg/signerurl"
 	"golang.org/x/net/html"
 	"golang.org/x/sync/singleflight"
 )
 
 const (
-	defaultStatsigSignerURL = "https://grok.wodf.de/sign"
-	statsigCacheTTL         = time.Hour
-	statsigCacheMaxEntries  = 4096
-	statsigMetaBodyLimit    = 4 << 20
-	statsigResponseLimit    = 4 << 10
+	statsigCacheTTL        = time.Hour
+	statsigCacheMaxEntries = 4096
+	statsigMetaBodyLimit   = 4 << 20
+	statsigResponseLimit   = 4 << 10
 )
 
 var errStatsigMetaMissing = errors.New("Grok index 缺少 grok-site-verification")
@@ -418,20 +418,25 @@ func validStatsigID(value string) bool {
 	return err == nil && len(decoded) == 70
 }
 
-func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request, token string, lease *infraegress.Lease) {
+// applySignedStatsig sets x-statsig-id on request. It fails closed: when no
+// valid value can be had from the configured source (manual value missing or
+// invalid, signer URL empty or invalid) it returns ErrStatsigUnavailable and
+// the caller must not send the request. There is no built-in signer URL.
+func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request, token string, lease *infraegress.Lease) error {
 	if request == nil {
-		return
+		return nil
 	}
 	cfg := a.config()
 	request.Header.Del("x-statsig-id")
+	if err := statsigConfigUsable(cfg); err != nil {
+		return err
+	}
 	if cfg.StatsigMode == "manual" {
-		if value := strings.TrimSpace(cfg.StatsigManualValue); validStatsigID(value) {
-			request.Header.Set("x-statsig-id", value)
-		}
-		return
+		request.Header.Set("x-statsig-id", strings.TrimSpace(cfg.StatsigManualValue))
+		return nil
 	}
 	if a.statsig == nil {
-		return
+		return fmt.Errorf("%w: signer not initialised", provider.ErrStatsigUnavailable)
 	}
 	value, source, err := a.statsig.Sign(ctx, cfg.BaseURL, cfg.StatsigSignerURL, token, lease, request.Method, request.URL.String())
 	if err == nil {
@@ -441,9 +446,25 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 		} else if source == "stale" {
 			a.log().Warn("web_statsig_refresh_failed_using_stale", "method", request.Method, "path", request.URL.EscapedPath())
 		}
-		return
+		return nil
 	}
 	a.log().Warn("web_statsig_fetch_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
+	return nil
+}
+
+// statsigConfigUsable reports ErrStatsigUnavailable when the configured
+// Statsig source cannot produce a valid value, before any network call.
+func statsigConfigUsable(cfg Config) error {
+	if cfg.StatsigMode == "manual" {
+		if !validStatsigID(strings.TrimSpace(cfg.StatsigManualValue)) {
+			return fmt.Errorf("%w: manual value missing or invalid", provider.ErrStatsigUnavailable)
+		}
+		return nil
+	}
+	if err := signerurl.Validate(cfg.StatsigSignerURL); err != nil {
+		return fmt.Errorf("%w: signer URL not configured or invalid", provider.ErrStatsigUnavailable)
+	}
+	return nil
 }
 
 // WarmStatsig 只使用一个 Web 账号和一个出口租约预热共享签名，不会逐账号访问上游。
@@ -454,6 +475,9 @@ func (a *Adapter) WarmStatsig(ctx context.Context, credential account.Credential
 			return 0, fmt.Errorf("手动 Statsig 配置无效")
 		}
 		return 0, nil
+	}
+	if err := statsigConfigUsable(cfg); err != nil {
+		return 0, err
 	}
 	if a.statsig == nil {
 		return 0, fmt.Errorf("Statsig 签名器未初始化")

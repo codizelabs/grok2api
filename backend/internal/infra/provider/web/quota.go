@@ -110,7 +110,9 @@ func (a *Adapter) SyncQuotaGroup(ctx context.Context, credential account.Credent
 	}
 	request.Header = buildHeaders(token, lease, "application/json")
 	applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/imagine")
-	a.applySignedStatsig(requestCtx, request, token, lease)
+	if err := a.applySignedStatsig(requestCtx, request, token, lease); err != nil {
+		return provider.QuotaGroupSnapshot{}, err
+	}
 	response, err := lease.DoDeferredForbidden(request)
 	if err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
@@ -339,7 +341,9 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 		}
 		request.Header = buildHeaders(token, lease, "application/json")
 		applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/")
-		a.applySignedStatsig(requestCtx, request, token, lease)
+		if statsigErr := a.applySignedStatsig(requestCtx, request, token, lease); statsigErr != nil {
+			return account.QuotaWindow{}, statsigErr
+		}
 		response, err = lease.DoDeferredForbidden(request)
 		if err != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)

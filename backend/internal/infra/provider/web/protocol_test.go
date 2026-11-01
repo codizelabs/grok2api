@@ -1730,7 +1730,7 @@ func TestGenerateVideoClassifiesOnlyExplicitHTTPRejectionAsCreateFailure(t *test
 		t.Fatal(err)
 	}
 	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
-	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test"}, manager, cipher, nil, nil)
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID}, manager, cipher, nil, nil)
 	request := provider.VideoRequest{
 		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
 		Prompt:     "test",

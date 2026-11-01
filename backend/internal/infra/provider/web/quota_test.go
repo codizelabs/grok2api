@@ -117,7 +117,7 @@ func TestSyncQuotaFetchesWeeklyOnlyAfterPaidTierIsConfirmed(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID,
 	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
 	snapshot, err := adapter.SyncQuota(context.Background(), account.Credential{ID: 2, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
 	if err != nil {
@@ -170,7 +170,7 @@ func TestSyncQuotaFailsWhenPaidWeeklySnapshotIsUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID,
 	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
 	if _, err := adapter.SyncQuota(context.Background(), account.Credential{ID: 2, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted}); err == nil {
 		t.Fatal("expected the paid weekly failure to reject the partial snapshot")
@@ -197,7 +197,7 @@ func TestSyncQuotaStopsAfterFirstUnauthorizedMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID,
 	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
 	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 3, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
 	if !errors.Is(err, provider.ErrUnauthorized) {
@@ -230,7 +230,7 @@ func TestSyncQuotaBlockedForbiddenIsUnauthorized(t *testing.T) {
 		ID: 1, Name: "web", Scope: egressdomain.ScopeWeb, Enabled: true, Health: 1,
 	}}
 	adapter := NewAdapter(Config{
-		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID,
 	}, infraegress.NewManager(egressRepository, cipher), cipher, nil, nil)
 	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 4, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
 	if !errors.Is(err, provider.ErrUnauthorized) {
@@ -298,7 +298,7 @@ func TestSyncQuotaGenericForbiddenIsNotUnauthorized(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID,
 	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
 	_, err = adapter.SyncQuota(context.Background(), account.Credential{ID: 5, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted})
 	if err == nil || errors.Is(err, provider.ErrUnauthorized) {
@@ -325,7 +325,7 @@ func TestSyncWeeklyCreditsBlockedForbiddenIsUnauthorized(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID,
 	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
 	_, err = adapter.SyncQuotaMode(context.Background(), account.Credential{ID: 7, EncryptedAccessToken: encrypted}, weeklyQuotaMode)
 	if !errors.Is(err, provider.ErrUnauthorized) {
@@ -489,7 +489,7 @@ func TestSyncQuotaCorrectsStoredSuperFromFreshWebQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 	adapter := NewAdapter(Config{
-		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: testValidStatsigID,
 	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
 	snapshot, err := adapter.SyncQuota(context.Background(), account.Credential{
 		ID: 1, WebTier: account.WebTierSuper, EncryptedAccessToken: encrypted,

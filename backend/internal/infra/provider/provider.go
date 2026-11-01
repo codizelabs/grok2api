@@ -28,6 +28,10 @@ var (
 	// in a Cloudflare block cool-down; no upstream call was made.
 	ErrEgressBlocked       = errors.New("egress blocked by cloudflare, waiting for cool-down")
 	ErrBirthDateAlreadySet = errors.New("upstream birth date is already set")
+	// ErrStatsigUnavailable marks a Grok Web request that needs x-statsig-id but
+	// has no valid one (no signer URL configured, an invalid signer URL, or a
+	// missing/invalid manual value). The request was not sent.
+	ErrStatsigUnavailable = errors.New("statsig_unavailable: no valid x-statsig-id, request not sent")
 )
 
 // HTTPStatusError preserves the upstream status when a streaming or asynchronous Provider cannot return a Response.

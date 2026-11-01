@@ -651,6 +651,11 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			s.deferVideoJob(parent, job)
 			return
 		}
+		if errors.Is(err, provider.ErrStatsigUnavailable) {
+			// Nothing was sent: fail with the pre-send code, no account penalty, no retry.
+			s.failVideoJob(parent, job, "statsig_unavailable", err, 0, failureAttempts.snapshot())
+			return
+		}
 
 		failureCtx, failureCancel := context.WithTimeout(context.Background(), finalizationTimeout)
 		failureHandled := false

@@ -66,9 +66,6 @@ func normalizedConfig(cfg Config) Config {
 	if cfg.StatsigMode == "" {
 		cfg.StatsigMode = "url"
 	}
-	if cfg.StatsigSignerURL == "" {
-		cfg.StatsigSignerURL = defaultStatsigSignerURL
-	}
 	if cfg.QuotaTimeoutSeconds <= 0 {
 		cfg.QuotaTimeoutSeconds = 25
 	}

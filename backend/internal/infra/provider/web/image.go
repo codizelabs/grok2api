@@ -1424,7 +1424,10 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 		}
 		request.Header = buildHeaders(token, lease, "application/json")
 		applyAppHeaders(request.Header, cfg.BaseURL, referer)
-		a.applySignedStatsig(requestCtx, request, token, lease)
+		if statsigErr := a.applySignedStatsig(requestCtx, request, token, lease); statsigErr != nil {
+			cancel()
+			return nil, statsigErr
+		}
 		response, err := lease.DoDeferredForbidden(request)
 		if err != nil {
 			cancel()

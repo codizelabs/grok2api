@@ -27,7 +27,6 @@ const (
 	ClearanceModeManual           = "manual"
 	ClearanceModeFlareSolverr     = "flaresolverr"
 	ClearanceModeOnDemand         = "on_demand"
-	DefaultStatsigSignerURL       = "https://grok.wodf.de/sign"
 	DefaultFlareSolverrURL        = "http://flaresolverr:8191"
 	RecommendedBuildClientVersion = "1.0.60"
 	RecommendedBuildUserAgent     = "grok-shell/" + RecommendedBuildClientVersion + " (linux; x86_64)"
@@ -617,6 +616,11 @@ func (c Config) Validate() error {
 			return errors.New("provider.web 手动 x-statsig-id 格式无效")
 		}
 	case StatsigModeURL:
+		// An empty signer URL means "not configured": there is no built-in signer,
+		// and Grok Web requests that need x-statsig-id fail closed until one is set.
+		if strings.TrimSpace(c.Provider.Web.StatsigSignerURL) == "" {
+			break
+		}
 		if err := signerurl.Validate(c.Provider.Web.StatsigSignerURL); err != nil {
 			return fmt.Errorf("provider.web Statsig 签名 URL 无效: %w", err)
 		}
@@ -908,7 +912,7 @@ func defaultConfig() Config {
 				StreamIdleTimeout: Duration(settingsdomain.DefaultBuildStreamIdleTimeout),
 			},
 			Web: WebProviderConfig{
-				BaseURL: "https://grok.com", StatsigMode: StatsigModeURL, StatsigSignerURL: DefaultStatsigSignerURL,
+				BaseURL: "https://grok.com", StatsigMode: StatsigModeURL,
 				ClearanceMode: ClearanceModeManual, FlareSolverrURL: DefaultFlareSolverrURL,
 				ClearanceTimeout: Duration(time.Minute), ClearanceRefresh: Duration(10 * time.Minute),
 				QuotaTimeout: Duration(25 * time.Second),
