@@ -7,7 +7,7 @@ export type SettingsConfigDTO = {
   providerBuild: { baseURL: string; fallbackBaseURL: string; clientVersion: string; clientIdentifier: string; tokenAuth: string; tokenAuthConfigured: boolean; userAgent: string; responseHeaderTimeout: string; streamIdleTimeout: string };
   providerWeb: {
     baseURL: string; quotaTimeout: string; chatTimeout: string; streamIdleTimeout: string; imageTimeout: string; videoTimeout: string;
-    statsigMode: "manual" | "url"; statsigManualValue?: string; statsigManualConfigured: boolean; statsigSignerURL: string;
+    statsigMode: "local" | "manual" | "url"; statsigManualValue?: string; statsigManualConfigured: boolean; statsigSignerURL: string;
     clearanceMode: ClearanceMode; flareSolverrURL: string; clearanceTimeout: string; clearanceRefresh: string;
     mediaConcurrency: number; allowNSFW: boolean; freeVideoDurationCap?: number;
     recoveryBackoffBase: string; recoveryBackoffMax: string;
@@ -121,7 +121,7 @@ const settingsConfigValidator = hasShape({
   providerBuild: hasShape({ baseURL: isString, fallbackBaseURL: isString, clientVersion: isString, clientIdentifier: isString, tokenAuth: isString, tokenAuthConfigured: isBoolean, userAgent: isString, responseHeaderTimeout: isString, streamIdleTimeout: isString }),
   providerWeb: hasShape({
     baseURL: isString, quotaTimeout: isString, chatTimeout: isString, streamIdleTimeout: isOptional(isString), imageTimeout: isString, videoTimeout: isString,
-    statsigMode: isOneOf("manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
+    statsigMode: isOneOf("local", "manual", "url"), statsigManualValue: isOptional(isString), statsigManualConfigured: isBoolean,
     statsigSignerURL: isString, clearanceMode: isOneOf("manual", "flaresolverr", "on_demand"), flareSolverrURL: isString,
     clearanceTimeout: isString, clearanceRefresh: isString, mediaConcurrency: isNumber, allowNSFW: isBoolean, freeVideoDurationCap: isOptional(isNumber), recoveryBackoffBase: isString, recoveryBackoffMax: isString,
   }),
