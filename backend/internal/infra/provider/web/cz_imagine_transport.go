@@ -203,7 +203,9 @@ func (a *Adapter) czImagineRejection(response *http.Response, lease interface {
 
 // SignImagine obtains the Statsig signature for the send at method+path
 // before anything else of that send goes out, so a reference upload never
-// leaves without its send's signature. Manual mode only checks the value; url
+// leaves without its send's signature. Manual mode only checks the value and
+// browser mode only checks the endpoint table (neither decrypts a token or
+// takes an egress lease); url
 // mode asks the signer for exactly this request and its cache serves the
 // DoImagine that follows. It fails closed with provider.ErrStatsigUnavailable
 // and makes only the calls DoImagine's own signing would make (the signer and
@@ -216,8 +218,13 @@ func (a *Adapter) SignImagine(ctx context.Context, credential account.Credential
 	if err := statsigConfigUsable(cfg); err != nil {
 		return err
 	}
-	if cfg.StatsigMode == "manual" {
+	switch cfg.StatsigMode {
+	case "manual":
 		return nil
+	case "browser":
+		// Nothing to sign: no token decrypt, no egress lease. An endpoint
+		// listed as needing a signature still fails closed here.
+		return statsigUsableFor(cfg, method, path)
 	}
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
