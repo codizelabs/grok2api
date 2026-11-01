@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/web"
 )
 
@@ -195,6 +196,30 @@ func TestURLModeFailingSignerUploadsNothing(t *testing.T) {
 	}
 	if h.fake.Sends() != 0 {
 		t.Fatalf("sends = %d, want 0", h.fake.Sends())
+	}
+}
+
+// The send's signature comes before its reference upload: with the free
+// reads signed but the send's signature failing, nothing is uploaded or sent.
+func TestSendSignatureComesBeforeAnyUpload(t *testing.T) {
+	h := newDefaultHarness(t)
+	const conv = "conv-sign-first-0001"
+	_, resultAsset, label := secSeedOwnedPost(h, conv)
+	h.transport.setSignErr(fmt.Errorf("%w: signer failed", provider.ErrStatsigUnavailable))
+
+	_, err := h.service.CreatePost(h.ctx, h.caller, CreateInput{JobID: "job-sign-create", Prompt: "p", Image: pngImage()})
+	secExpect(t, "CreatePost", err, CodeStatsigUnavailable, NotSent)
+	_, err = h.service.EditInPost(h.ctx, h.caller, conv, label, EditInput{JobID: "job-sign-edit", Prompt: "p", SourceAssetID: resultAsset, Extra: []Image{*pngImage()}})
+	secExpect(t, "EditInPost", err, CodeStatsigUnavailable, NotSent)
+
+	if n := h.fake.Count(http.MethodPost, `^/http/upload`); n != 0 {
+		t.Fatalf("%d uploads went out before the send's signature, want 0", n)
+	}
+	if h.fake.Sends() != 0 {
+		t.Fatalf("sends = %d, want 0", h.fake.Sends())
+	}
+	if signs := h.transport.Signs(); len(signs) != 2 || signs[0] != "POST "+pathCreate || signs[1] != "POST "+addResponsePath(conv) {
+		t.Fatalf("signs = %v, want the create then the add-response send", signs)
 	}
 }
 
