@@ -3,6 +3,8 @@ package observe
 import (
 	"context"
 	"encoding/json"
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -201,6 +203,33 @@ func TestOverviewNamesAFailingSource(t *testing.T) {
 	r := router(New(Options{LabelSecret: "s"}), testToken)
 	if rec := do(r, http.MethodGet, "/cz/v1/observe/accounts", "Bearer "+testToken); rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("no source: %d", rec.Code)
+	}
+}
+
+// A used-up weekly window (or every window used up) is cooling for quota,
+// as grok2api's own summary counts it "waiting for reset".
+func TestSpentWindowsAreCooling(t *testing.T) {
+	svc := New(Options{LabelSecret: "s", Now: func() time.Time { return t0 }})
+	mk := func(windows ...accountdomain.QuotaWindow) accountapp.View {
+		return accountapp.View{Credential: accountdomain.Credential{ID: 1, Enabled: true, AuthStatus: accountdomain.AuthStatusActive}, QuotaWindows: windows}
+	}
+	for _, c := range []struct {
+		v    accountapp.View
+		want string
+	}{
+		{mk(accountdomain.QuotaWindow{Mode: "weekly", Remaining: 0, Total: 10000, ResetAt: at(48 * time.Hour)}), "cooling"},
+		{mk(accountdomain.QuotaWindow{Mode: "weekly", Remaining: 6700, Total: 10000}), "active"},
+		{mk(accountdomain.QuotaWindow{Mode: "video", Remaining: 0, Total: 12}, accountdomain.QuotaWindow{Mode: "image_pro", Remaining: 3, Total: 50}), "active"},
+		{mk(accountdomain.QuotaWindow{Mode: "video", Remaining: 0, Total: 12}, accountdomain.QuotaWindow{Mode: "image_pro", Remaining: 0, Total: 50}), "cooling"},
+	} {
+		a := svc.account(c.v, t0)
+		if a.State != c.want {
+			t.Fatalf("%+v: state %s, want %s", c.v.QuotaWindows, a.State, c.want)
+		}
+	}
+	a := svc.account(mk(accountdomain.QuotaWindow{Mode: "weekly", Remaining: 0, Total: 10000, ResetAt: at(48 * time.Hour)}), t0)
+	if a.Reason != "quota" || a.Until == nil || !a.Until.Equal(t0.Add(48*time.Hour)) {
+		t.Fatalf("weekly spent: %+v", a)
 	}
 }
 

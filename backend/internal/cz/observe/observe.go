@@ -355,7 +355,7 @@ func accountState(v accountapp.View, now time.Time) (string, string, *time.Time)
 		return "failed", "auth", nil
 	case future(c.CooldownUntil, now):
 		return "cooling", "cooldown", copyTime(c.CooldownUntil)
-	case v.Quota.Status == accountapp.QuotaStatusWaitingReset || v.Quota.Status == accountapp.QuotaStatusProbing:
+	case v.Quota.Status == accountapp.QuotaStatusWaitingReset || v.Quota.Status == accountapp.QuotaStatusProbing || quotaSpent(v.QuotaWindows):
 		var until *time.Time
 		for _, w := range v.QuotaWindows {
 			if w.Total > 0 && w.Remaining <= 0 && future(w.ResetAt, now) && (until == nil || w.ResetAt.Before(*until)) {
@@ -369,6 +369,22 @@ func accountState(v accountapp.View, now time.Time) (string, string, *time.Time)
 	default:
 		return "active", "", nil
 	}
+}
+
+// quotaSpent is an account waiting for a reset by its windows: its weekly
+// window is used up, or every window it has is (grok2api counts these as
+// "waiting for reset" in its summary).
+func quotaSpent(windows []accountdomain.QuotaWindow) bool {
+	spent := 0
+	for _, w := range windows {
+		if w.Total > 0 && w.Remaining <= 0 {
+			if w.Mode == "weekly" {
+				return true
+			}
+			spent++
+		}
+	}
+	return len(windows) > 0 && spent == len(windows)
 }
 
 func (s *Service) account(v accountapp.View, now time.Time) Account {
