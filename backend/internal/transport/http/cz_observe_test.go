@@ -27,3 +27,15 @@ func TestCZObserveRoutesAreMountedReadOnlyAndUnconfiguredByDefault(t *testing.T)
 		}
 	}
 }
+
+// Security review 2026-11-05 G1: an unknown path under /cz is a backend 404, never the web app's index.html.
+func TestCZUnknownPathIsBackend404(t *testing.T) {
+	for _, p := range []string{"/cz", "/cz/v1/observe/nope", "/cz/v1/observe/accounts/../x"} {
+		if !isBackendPath(p) {
+			t.Fatalf("%s should be a backend path (404, not the web app)", p)
+		}
+	}
+	if isBackendPath("/czar") {
+		t.Fatal("/czar is not under /cz")
+	}
+}
