@@ -82,7 +82,8 @@ func frontendFile(root, requestPath string) (string, bool) {
 
 func isBackendPath(value string) bool {
 	cleanPath := path.Clean("/" + value)
-	for _, prefix := range []string{"/api", "/v1", "/swagger"} {
+	// "/cz": the CodizeLabs fork's routes (P3-P6) answer 404 off their own paths, never the web app (security review 2026-11-05 G1)
+	for _, prefix := range []string{"/api", "/v1", "/swagger", "/cz"} {
 		if cleanPath == prefix || strings.HasPrefix(cleanPath, prefix+"/") {
 			return true
 		}
